@@ -1,5 +1,7 @@
 # Go语言程序设计
 
+![](https://github.com/jearry/StudyNote/images/Go语言程序设计.jpg)
+
 ## 一、概述
 
 * 大道至简的设计哲学
