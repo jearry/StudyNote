@@ -1,6 +1,6 @@
 # Go语言程序设计
 
-![](https://github.com/jearry/StudyNote/images/Go语言程序设计.jpg)
+![](https://github.com/jearry/StudyNote/blob/master/images/Go%E8%AF%AD%E8%A8%80%E7%A8%8B%E5%BA%8F%E8%AE%BE%E8%AE%A1.jpg?raw=true)
 
 ## 一、概述
 
