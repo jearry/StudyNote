@@ -11,7 +11,7 @@
     * Go项目是在Google公司维护超级复杂的几个软件系统遇到的一些问题的反思。
 
 * 为并发而生
-    
+
     * 语言层次支持并发模型：goroutine
     ```
     go func(){
@@ -75,13 +75,13 @@ export PATH=$PATH:$GOROOT/bin
 * 预定义标识符
 
     * 内建常量: 
-    
+
         ```
         true false iota nil
         ```
 
     * 内建类型: 
-        
+
         ```
         int int8 int16 int32 int64
         uint uint8 uint16 uint32 uint64 uintptr
@@ -127,7 +127,7 @@ const(
 * []rune(s) 将字符串转换成Unicode码点
 * += 拼凑低效，建议用 strings.Join 或 bytes.Buffer
 * 字符串保存为utf8，用for...range遍历，非ASCII索引更新的步长将超过1个字节
-（建议先转[]rune），
+  （建议先转[]rune），
 * utf8.DecodeRuneInString()获取第一个字符的位置和大小
 * strings.Map()可用来替换或去掉字符串中的字符（返回负数则原来字符删除）
 * 相关包：fmt、strings、strconv、utf8、unicode、regexp
@@ -587,7 +587,7 @@ type LowerUpperCaser interface{
     file := os.Create(filename)
     fileWriter := gzip.NewWriter(file)
     writer := tar.NewWriter(fileWriter)
-    
+
     //loop process input file
     inputfile := os.Open(inputfilename)
     stat := file.Stat()
@@ -661,7 +661,7 @@ type LowerUpperCaser interface{
             * 默认不会执行基准测试
             * 需要指定 -test.bench=.* (正则)
             * -test.benchtime选项可以指定基准测试的执行时间
-        
+
 * 导入包
     * 别名用于切换版本： 
     ```
