@@ -167,15 +167,9 @@ kube-proxy --logtostderr=true --v=0 --api_servers=http://kube-master:8080 >> /va
 
 #### 4）查询Kubernetes的健康状态
 
-- Kubernetes Master
-
 ```
+kubectl cluster-info
 kubectl -s http://kube-master:8080 get componentstatus
-```
-
-- Kubernetes Node
-
-```
 kubectl -s http://kube-master:8080 get node
 ```
 
@@ -338,6 +332,123 @@ docker -d -H unix:///var/run/docker.sock -H tcp://0.0.0.0:2375 --bridge=docker0 
 - ClusterLogging使用Fluentd+Elastiscsearch+Kibana来收集、汇总和展示Kubenetes运行平台的日志
 
 ##### 4）安装Kube UI
+
+```
+kubectl create -f kube-ui-rc.yaml
+kubectl create -f kube-ui-svc.yaml
+```
+
+
+
+## 三、Kubernetes快速入门
+
+### 1、示例应用Guestbook
+
+Guestbook包含2部分
+
+- Frontend：web前端，运行3个实例
+- Redis：存储，主备模式，1主2备
+
+### 2、准备工作
+
+```
+kubectl cluster-info
+kubectl -s http://kube-master:8080 get componentstatuses
+kubectl -s http://kube-master:8080 get nodes
+```
+
+### 3、运行Redis
+
+#### 1）创建Redis Master Pod
+
+```
+kubectl create -f redis-master-controller.yaml
+kubectl get replicationcontroller redis-master
+kubectl get pod --selector name=redis-master
+```
+
+#### 2）创建Redis Master Service
+
+```
+kubectl create -f redis-master-svr.yaml
+kubectl get service redis-master
+```
+
+#### 3）服务发现两种机制
+
+- 环境变量：Pod必须在Service之后启动
+- DNS：需要安装Cluster DNS
+
+
+#### 4）创建Redis Slave Pod
+
+- 容器使用镜像gcr.io/google_samples/gb-redisslave:v1
+
+  - 基于redis镜像重写了启动脚本，将作为redis的备节点启动
+
+  ```
+  if [[${GET_HOSTS_FROM:-dns} == "env"]]; then
+  	redis-server --slaveof ${REDIS_MASTER_SERVICE_HOST} 6379
+  else
+  	redis-server --slaveof redis-master 6379
+  fi
+  ```
+
+  - 创建
+
+  ```
+  kubectl create -f redis-slave-controller.yaml
+  kubectl get replicationcontroller redis-slave
+  kubectl get pod --selector name=redis-slave
+  ```
+
+#### 5）创建Redis Slave Service
+
+```
+kubectl create -f redis-slave-svr.yaml
+kubectl get service redis-slave
+```
+
+### 4、运行Frontend
+
+#### 1）创建Frontend Pod
+
+```
+kubectl create -f frontend-controller.yaml
+kubectl get replicationcontroller frontend
+kubectl get pod --selector name=frontend
+```
+
+#### 2）创建Frontend Service
+
+```
+kubectl create -f frontend-svr.yaml
+kubectl get service frontend
+```
+
+### 5、设置Guestbook外网访问
+
+修改frontend-svr.yaml，设置spec.type为NodePort
+
+```
+kubectl replace -f frontend-svr.yaml --force
+```
+
+### 6、清理Guestbook
+
+只需删除Replication Controller和Service
+
+```
+kubectl delete replicationcontroller redis-master redis-slave frontend
+kubectl delete service redis-master redis-slave frontend
+```
+
+
+
+
+
+
+
 
 
 
