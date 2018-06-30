@@ -97,11 +97,11 @@ cp etcd /usr/bin/etcd
 cp etcctl /usr/bin/etcdctl
 ```
 
-- 运行：
+- 运行
 
 `etcd -name etcd -data-dir /var/lib/etcd -listen-client-urls http://0.0.0.0:2379 http://0.0.0.0:4001 -advertise-client-urls http://0.0.0.0:2379 http://0.0.0.0:4001 >> /var/log/etcd.log 2>&1 &`
 
-- 查看健康状态：
+- 查看健康状态
 
 `etcdctl -C http://etcd:4001 cluster-health`
 
@@ -443,17 +443,82 @@ kubectl delete replicationcontroller redis-master redis-slave frontend
 kubectl delete service redis-master redis-slave frontend
 ```
 
+## 四、Pod
+
+### 1、Pod的基本操作
+
+#### 1）创建Pod
+
+```
+apiVersion: v1
+kind: Pod
+metadata:
+  name: hello-world
+spec:  #配置pod的具体规格
+  restartPolicy: OnFailure              
+  containers:
+  - name: hello
+    image: "ubuntu:14.04"
+    command: ["/bin/echo","Hello","world"]
+```
+
+```
+kubectl create -f def_pod.yaml
+```
+
+#### 2）查询Pod
+
+```
+kubectl get pod hello-world
+kubectl describe pod hello-world
+kubectl get pod hello-world --output=go-template --template={{.status.phase}}
+```
+
+#### 3）删除Pod
+
+```
+kubectl delete pod hello-world
+kubectl delete pod --all
+```
+
+#### 4） 更新Pod
+
+```
+kubectl replace -f def-pod.yaml
+kubectl replace --force -f def-pod.yaml
+```
+
+### 2、Pod与容器
+
+#### 1） 镜像
+
+```
+name: hello
+image: "ubuntu:14.04"
+imagePullPolicy: Always
+```
 
 
 
+#### 2）启动命令
 
+#### 3）环境变量
 
+#### 4）端口
 
+#### 5） 数据持久和共享
 
+### 3、Pod的网络
 
+### 4、Pod的重启策略
 
+### 5、Pod的状态和生命周期
 
+### 6、自定义检查Pod
 
+### 7、调度Pod
+
+### 8、问题定位指南
 
 
 
