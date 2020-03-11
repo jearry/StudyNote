@@ -1,6 +1,6 @@
 # Kubernetes实战
 
-![Kubernetes实战](/Users/jearry/StudyNote/images/Kubernetes实战.jpg)
+![Kubernetes实战](images/Kubernetes实战.jpg)
 
 ## 一、Kubernetes介绍
 
@@ -39,7 +39,7 @@
 
 ### 1、Kubernetes的架构和组件
 
-![Kubernetes架构图](/Users/jearry/StudyNote/images/Kubernetes架构图.jpg)
+![Kubernetes架构图](images/Kubernetes架构图.jpg)
 
 -  Kubernetes属于主从分布式架构，节点在角色上分Master和Node
 - 使用Etcd作为存储中间件（通过Raft一致性算法处理日志复制以保证强一致性），使得Kubernetes各组件属于无状态，从而可以更简单地实施分布式集群部署
