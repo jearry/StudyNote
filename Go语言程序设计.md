@@ -53,8 +53,6 @@
 
 ## 二、布尔与数字类型
 
-### 开始
-
 * 命令行运行 go version，如果出错则把如下脚本加入 ～/.profile
 ```
 export GOROOT=/HOME/opt/go
@@ -64,7 +62,6 @@ export PATH=$PATH:$GOROOT/bin
 * go程序做脚本用：gonow gorun
 * IDE: VS Code、LiteIDE、Gogland
 
-### 基础
 * 关键字
     ```
     package import func interface struct map
