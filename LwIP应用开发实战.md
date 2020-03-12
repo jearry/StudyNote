@@ -2,7 +2,9 @@
 
 ## 1、网络协议简介
 
-略
+### 1）TCP/IP的封包和解包
+
+![image-20200312140213295](images\LwIP\tcpip报文处理.png)
 
 ## 2、LwIP简介
 
@@ -102,11 +104,11 @@
 
     ![image-20200311102640169](images\LwIP\MAC数据包格式.png)
 
-    - 前导字段：7个0x55
-    - 帧起始界定符：0xD5
+    - 前导字段：7个0x55，MAC层会过滤掉
+    - 帧起始界定符：0xD5，MAC层会过滤掉
     - 类型/长度：大于0x600为类型
     - 数据：0-1500长度
-    - 填充：MAC数据包最低长度为64字节，数据少于46字节时，自动填充无效数据
+    - 填充：MAC数据包最低长度为64字节，"数据"长度少于46字节时，自动填充无效数据
     - FCS：CRC校验
 
 ### 2) STM32的ETH外设
@@ -265,7 +267,22 @@ struct netif {
   - ethernetif_input：收包处理，同时上报给内核
 
     ```C++
-    void ethernetif_input(void *pParams);
+    void ethernetif_input(struct netif *netif)
+    {
+      struct pbuf *p;
+    
+      /* move received packet into a new pbuf */
+      p = low_level_input(netif);
+      /* if no packet could be read, silently ignore this */
+      if (p != NULL) {
+        /* pass all packets to ethernet_input, which decides what packets it supports */
+        if (netif->input(p, netif) != ERR_OK) {
+          LWIP_DEBUGF(NETIF_DEBUG, ("ethernetif_input: IP input error\n"));
+          pbuf_free(p);
+          p = NULL;
+        }
+      }
+    }
     ```
 
 ## 5、LwIP的内存管理
@@ -442,13 +459,19 @@ struct netif {
   void pbuf_realloc(struct pbuf *p, u16_t new_len)
   ```
 
-- pbuf_header，调整pbuf的payload指针，len和tot_len都会随之更新
+- pbuf_header，调整pbuf的payload指针（-header_size_increment，增加头），len和tot_len都会随之更新
 
   ```C++
   u8_t pbuf_header(struct pbuf *p, s16_t header_size_increment)
   ```
 
-- pbuf_take，向pbuf的payload复制数据
+- pbuf_remove_header，调整pbuf的payload指针（+header_size_decrement，去掉头），len和tot_len都会随之更新
+
+  ```C++
+  u8_t pbuf_remove_header(struct pbuf *p, size_t header_size_decrement)
+  ```
+
+  pbuf_take，向pbuf的payload复制数据
 
   ```C++
   err_t pbuf_take(struct pbuf *buf, const void *dataptr, u16_t len)
@@ -474,9 +497,9 @@ struct netif {
 
 ## 7、无操作系统移植LwIP
 
-### 1）将LwIP添加到裸机工程
+### 1）将LwIP添加到工程
 
-### 2）移植头文件
+### 2）修改配置
 
 - lwipopts.h，LwIP的参数配置
 
@@ -583,7 +606,34 @@ int main(void)
 
 ## 8、有操作系统移植LwIP
 
+### 1）将OS源码和LwIP添加到工程
 
+### 2）修改配置
+
+- lwipopts.h，LwIP的参数配置
+  - NO_SYS：0
+  - LWIP_NETCONN：1
+  - LWIP_SOCKET：1
+
+### 3）适配OS
+
+- sys_arch.c、sys_arch.h
+
+### 4）移植网卡驱动
+
+- ethernetif.c
+
+### 5）协议栈初始化
+
+- 增加tpcip_thread线程创建处理
+
+### 6）获取数据包
+
+参见第9章
+
+### 7）验证测试
+
+`ping 192.168.1.122`
 
 ## 9、LwIP一探究竟
 
@@ -659,4 +709,196 @@ int main(void)
 - API消息
 
 ![image-20200312091912464](images\LwIP\api消息运作.png)
+
+## 10、ARP协议
+
+### 1）简介
+- MAC地址
+
+  - 长度：6个字节
+  - 单播地址bit0为0
+  - 多播地址bit0为1
+  - 广播地址为全1
+
+- 网卡数据处理
+
+  - 无回复机制
+  - 收到数据包，如果地址不匹配，或CRC校验不对，网卡只是丢弃
+
+- ARP缓存
+
+  - 一般过期时间为10分钟
+
+### 2）LwIP缓存表定义
+
+  ```C++
+  #define ARP_TABLE_SIZE                  10
+  
+  /** ARP states */
+  enum etharp_state {
+    ETHARP_STATE_EMPTY = 0,
+    ETHARP_STATE_PENDING,
+    ETHARP_STATE_STABLE,
+    ETHARP_STATE_STABLE_REREQUESTING_1,
+    ETHARP_STATE_STABLE_REREQUESTING_2
+  #if ETHARP_SUPPORT_STATIC_ENTRIES
+    , ETHARP_STATE_STATIC
+  #endif /* ETHARP_SUPPORT_STATIC_ENTRIES */
+  };
+  
+  struct etharp_entry {
+  #if ARP_QUEUEING
+    /** Pointer to queue of pending outgoing packets on this ARP entry. */
+    struct etharp_q_entry *q;
+  #else /* ARP_QUEUEING */
+    /** Pointer to a single pending outgoing packet on this ARP entry. */
+    struct pbuf *q;
+  #endif /* ARP_QUEUEING */
+    ip4_addr_t ipaddr;
+    struct netif *netif;
+    struct eth_addr ethaddr;
+    u16_t ctime;
+    u8_t state;
+  };
+  
+  static struct etharp_entry arp_table[ARP_TABLE_SIZE];
+  ```
+
+### 3）运作机制
+
+  - A发数据给B
+  - A首先检查自己的ARP缓存表，查看是否有B的IP地址和MAC地址的记录
+  - 如果没有，则广播ARP请求
+  - 收到ARP请求的主机检查自己的IP和请求的IP相同，相同则回应，不相同丢弃
+  - A收到回应后更新B的IP地址和MAC对应关系
+
+### 4）ARP报文
+
+  ![image-20200312162807915](images\LwIP\ARP报文.png)
+
+  
+
+### 5）发送
+
+  ```C++
+  err_t etharp_request(struct netif *netif, const ip4_addr_t *ipaddr);
+  //etharp_request最终调用ethernet_output发送
+  
+  err_t ethernet_output(struct netif * netif, struct pbuf * p,
+                  const struct eth_addr * src, const struct eth_addr * dst,
+                  u16_t eth_type) {
+    struct eth_hdr *ethhdr;
+    u16_t eth_type_be = lwip_htons(eth_type);
+  
+    {
+      if (pbuf_add_header(p, SIZEOF_ETH_HDR) != 0) {
+        goto pbuf_header_failed;
+      }
+    }
+  
+    LWIP_ASSERT_CORE_LOCKED();
+  
+    ethhdr = (struct eth_hdr *)p->payload;
+    ethhdr->type = eth_type_be;
+    SMEMCPY(&ethhdr->dest, dst, ETH_HWADDR_LEN);
+    SMEMCPY(&ethhdr->src,  src, ETH_HWADDR_LEN);
+  
+    LWIP_ASSERT("netif->hwaddr_len must be 6 for ethernet_output!",
+                (netif->hwaddr_len == ETH_HWADDR_LEN));
+    LWIP_DEBUGF(ETHARP_DEBUG | LWIP_DBG_TRACE,
+                ("ethernet_output: sending packet %p\n", (void *)p));
+  
+    /* send the packet */
+    return netif->linkoutput(netif, p);
+  
+  pbuf_header_failed:
+    LWIP_DEBUGF(ETHARP_DEBUG | LWIP_DBG_TRACE | LWIP_DBG_LEVEL_SERIOUS,
+                ("ethernet_output: could not allocate room for header.\n"));
+    LINK_STATS_INC(link.lenerr);
+    return ERR_BUF;
+  }
+  ```
+
+### 6）接收
+
+  ```C++
+  //有删减
+  err_t ethernet_input(struct pbuf *p, struct netif *netif)
+  {
+    struct eth_hdr *ethhdr;
+    u16_t type;
+  #if LWIP_ARP || ETHARP_SUPPORT_VLAN || LWIP_IPV6
+    u16_t next_hdr_offset = SIZEOF_ETH_HDR;
+  #endif /* LWIP_ARP || ETHARP_SUPPORT_VLAN */
+  
+    LWIP_ASSERT_CORE_LOCKED();
+    //略...
+    
+    if (ethhdr->dest.addr[0] & 1) {
+      /* this might be a multicast or broadcast packet */
+      if (ethhdr->dest.addr[0] == LL_IP4_MULTICAST_ADDR_0) {
+  #if LWIP_IPV4
+        if ((ethhdr->dest.addr[1] == LL_IP4_MULTICAST_ADDR_1) &&
+            (ethhdr->dest.addr[2] == LL_IP4_MULTICAST_ADDR_2)) {
+          /* mark the pbuf as link-layer multicast */
+          p->flags |= PBUF_FLAG_LLMCAST;
+        }
+  #endif /* LWIP_IPV4 */
+      }
+      else if (eth_addr_cmp(&ethhdr->dest, &ethbroadcast)) {
+        /* mark the pbuf as link-layer broadcast */
+        p->flags |= PBUF_FLAG_LLBCAST;
+      }
+    }
+  
+    switch (type) {
+  #if LWIP_IPV4 && LWIP_ARP
+      /* IP packet? */
+      case PP_HTONS(ETHTYPE_IP):
+        if (!(netif->flags & NETIF_FLAG_ETHARP)) {
+          goto free_and_return;
+        }
+        /* skip Ethernet header (min. size checked above) */
+        if (pbuf_remove_header(p, next_hdr_offset)) {
+          LWIP_DEBUGF(ETHARP_DEBUG | LWIP_DBG_TRACE, ("Can't move over header in packet"));
+          goto free_and_return;
+        } else {
+          /* pass to IP layer */
+          ip4_input(p, netif);
+        }
+        break;
+  
+      case PP_HTONS(ETHTYPE_ARP):
+        if (!(netif->flags & NETIF_FLAG_ETHARP)) {
+          goto free_and_return;
+        }
+        /* skip Ethernet header (min. size checked above) */
+        if (pbuf_remove_header(p, next_hdr_offset)) {
+          LWIP_DEBUGF(ETHARP_DEBUG | LWIP_DBG_TRACE, ("Can't move over header in packet"));
+          ETHARP_STATS_INC(etharp.lenerr);
+          ETHARP_STATS_INC(etharp.drop);
+          goto free_and_return;
+        } else {
+          /* pass p to ARP module */
+          etharp_input(p, netif);
+        }
+        break;
+  #endif /* LWIP_IPV4 && LWIP_ARP */
+       
+        //略...
+    }
+  
+    /* This means the pbuf is freed or consumed,
+       so the caller doesn't have to free it again */
+    return ERR_OK;
+  
+  free_and_return:
+    pbuf_free(p);
+    return ERR_OK;
+  }
+  ```
+
+  ## 11、IP协议
+
+
 
