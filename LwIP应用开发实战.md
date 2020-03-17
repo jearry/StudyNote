@@ -1014,10 +1014,34 @@ struct ip_hdr {
   PACK_STRUCT_FLD_S(ip4_addr_p_t src);
   PACK_STRUCT_FLD_S(ip4_addr_p_t dest);
 } PACK_STRUCT_STRUCT;
-PACK_STRUCT_END
+PACK_STRUCT_END    
 ```
 
-### 3）IP数据包分片
+### 3）PCB
+
+```C++
+#define IP_PCB                             \
+  /* ip addresses in network byte order */ \
+  ip_addr_t local_ip;                      \
+  ip_addr_t remote_ip;                     \
+  /* Bound netif index */                  \
+  u8_t netif_idx;                          \
+  /* Socket options */                     \
+  u8_t so_options;                         \
+  /* Type Of Service */                    \
+  u8_t tos;                                \
+  /* Time To Live */                       \
+  u8_t ttl                                 \
+  /* link layer address resolution hint */ \
+  IP_PCB_NETIFHINT
+      
+struct ip_pcb {
+  /* Common members of all PCB types */
+  IP_PCB;
+};
+```
+
+### 4）IP数据包分片
 
 - 链路层协议的 MTU 严格地限制着 IP 数据报的长度。  
 - 发送主机分片，路由器只是转发，目标接收端负责组装
@@ -1025,7 +1049,7 @@ PACK_STRUCT_END
 
 ![image-20200313110718861](images\LwIP\IP分片示意图.png)
 
-### 4）发送
+### 5）发送
 
 ```C++
 err_t ip4_output(struct pbuf *p, const ip4_addr_t *src, const ip4_addr_t *dest,
@@ -1222,7 +1246,7 @@ err_t ip4_output_if_opt_src(struct pbuf *p, const ip4_addr_t *src, const ip4_add
 }
 ```
 
-### 5）接收
+### 6）接收
 
 ```C++
 err_t
@@ -1885,8 +1909,8 @@ icmperr:
 
 ### 1）简介
 
-- 复杂：TCP协议的处理占据了LwIP协议栈的大半代码
 - 特性
+  - 复杂：TCP协议的处理占据了LwIP协议栈的大半代码
   - 连接机制
   - 确认和重传
   - 缓冲机制
@@ -1900,6 +1924,12 @@ icmperr:
     - 重传
   - 拥塞控制
     - 延迟重传
+- 常用端口
+  - 20、21：FTP
+  - 25：SMTP
+  - 69：TFTP
+  - 80：HTTP
+  - 110：POP3
 
 ### 2）TCP报文结构
 
@@ -1950,9 +1980,18 @@ PACK_STRUCT_END
 
 ![image-20200313170623819](images\LwIP\tcp状态转换.png)
 
-### 6）数据结构
+### 6）PCB
 
 ```C++
+#define TCP_PCB_COMMON(type) \
+  type *next; /* for the linked list */ \
+  void *callback_arg; \
+  TCP_PCB_EXTARGS \
+  enum tcp_state state; /* TCP state */ \
+  u8_t prio; \
+  /* ports are in host byte order */ \
+  u16_t local_port
+      
 /** the TCP protocol control block */
 struct tcp_pcb {
 /** common PCB members */
@@ -2736,4 +2775,1635 @@ dropped:
   pbuf_free(p);
 }
 ```
+
+## 14、UDP协议
+
+### 1）简介
+
+- 特点
+  - 无连接、不可靠
+  - 速度极快，实时性好
+  - 出现错误直接丢弃，无反馈
+  - 支持一对一、一对多、多对一、多对多的交互通信
+- 常用端口
+  - 53：DNS
+  - 69：TFTP
+  - 123：NTP
+  - 161：SNMP
+
+### 2）UDP报文结构
+
+![image-20200316120547043](images\LwIP\UDP报文封装)
+
+![image-20200316120621571](D:\Book\StudyNote\images\LwIP\UDP报文结构.png)
+
+```C++
+PACK_STRUCT_BEGIN
+struct udp_hdr {
+  PACK_STRUCT_FIELD(u16_t src);
+  PACK_STRUCT_FIELD(u16_t dest);  /* src/dest UDP ports */
+  PACK_STRUCT_FIELD(u16_t len);
+  PACK_STRUCT_FIELD(u16_t chksum);
+} PACK_STRUCT_STRUCT;
+PACK_STRUCT_END
+```
+
+
+
+### 3）PCB
+
+```C++
+/** the UDP protocol control block */
+struct udp_pcb {
+/** Common members of all PCB types */
+  IP_PCB;
+
+/* Protocol specific PCB members */
+
+  struct udp_pcb *next;
+
+  u8_t flags;
+  /** ports are in host byte order */
+  u16_t local_port, remote_port;
+
+#if LWIP_MULTICAST_TX_OPTIONS
+#if LWIP_IPV4
+  /** outgoing network interface for multicast packets, by IPv4 address (if not 'any') */
+  ip4_addr_t mcast_ip4;
+#endif /* LWIP_IPV4 */
+  /** outgoing network interface for multicast packets, by interface index (if nonzero) */
+  u8_t mcast_ifindex;
+  /** TTL for outgoing multicast packets */
+  u8_t mcast_ttl;
+#endif /* LWIP_MULTICAST_TX_OPTIONS */
+
+#if LWIP_UDPLITE
+  /** used for UDP_LITE only */
+  u16_t chksum_len_rx, chksum_len_tx;
+#endif /* LWIP_UDPLITE */
+
+  /** receive callback function */
+  udp_recv_fn recv;
+  /** user-supplied argument for the recv callback */
+  void *recv_arg;
+};
+```
+
+### 4）发送
+
+```C++
+err_t
+udp_send(struct udp_pcb *pcb, struct pbuf *p)
+{
+  if (IP_IS_ANY_TYPE_VAL(pcb->remote_ip)) {
+    return ERR_VAL;
+  }
+
+  /* send to the packet using remote ip and port stored in the pcb */
+  return udp_sendto(pcb, p, &pcb->remote_ip, pcb->remote_port);
+}
+
+err_t
+udp_sendto(struct udp_pcb *pcb, struct pbuf *p,
+           const ip_addr_t *dst_ip, u16_t dst_port)
+{
+#if LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP
+  return udp_sendto_chksum(pcb, p, dst_ip, dst_port, 0, 0);
+}
+
+/** @ingroup udp_raw
+ * Same as udp_sendto(), but with checksum */
+err_t
+udp_sendto_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
+                  u16_t dst_port, u8_t have_chksum, u16_t chksum)
+{
+#endif /* LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP */
+  struct netif *netif;
+
+  if (!IP_ADDR_PCB_VERSION_MATCH(pcb, dst_ip)) {
+    return ERR_VAL;
+  }
+
+  if (pcb->netif_idx != NETIF_NO_INDEX) {
+    netif = netif_get_by_index(pcb->netif_idx);
+  } else {
+#if LWIP_MULTICAST_TX_OPTIONS
+    netif = NULL;
+    if (ip_addr_ismulticast(dst_ip)) {
+      /* For IPv6, the interface to use for packets with a multicast destination
+       * is specified using an interface index. The same approach may be used for
+       * IPv4 as well, in which case it overrides the IPv4 multicast override
+       * address below. Here we have to look up the netif by going through the
+       * list, but by doing so we skip a route lookup. If the interface index has
+       * gone stale, we fall through and do the regular route lookup after all. */
+      if (pcb->mcast_ifindex != NETIF_NO_INDEX) {
+        netif = netif_get_by_index(pcb->mcast_ifindex);
+      }
+      else
+        {
+          /* IPv4 does not use source-based routing by default, so we use an
+             administratively selected interface for multicast by default.
+             However, this can be overridden by setting an interface address
+             in pcb->mcast_ip4 that is used for routing. If this routing lookup
+             fails, we try regular routing as though no override was set. */
+          if (!ip4_addr_isany_val(pcb->mcast_ip4) &&
+              !ip4_addr_cmp(&pcb->mcast_ip4, IP4_ADDR_BROADCAST)) {
+            netif = ip4_route_src(ip_2_ip4(&pcb->local_ip), &pcb->mcast_ip4);
+          }
+        }
+    }
+
+    if (netif == NULL)
+#endif /* LWIP_MULTICAST_TX_OPTIONS */
+    {
+      /* find the outgoing network interface for this packet */
+      netif = ip_route(&pcb->local_ip, dst_ip);
+    }
+  }
+
+  /* no outgoing network interface could be found? */
+  if (netif == NULL) {
+    UDP_STATS_INC(udp.rterr);
+    return ERR_RTE;
+  }
+#if LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP
+  return udp_sendto_if_chksum(pcb, p, dst_ip, dst_port, netif, have_chksum, chksum);
+#else /* LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP */
+  return udp_sendto_if(pcb, p, dst_ip, dst_port, netif);
+#endif /* LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP */
+}
+
+err_t
+udp_sendto_if(struct udp_pcb *pcb, struct pbuf *p,
+              const ip_addr_t *dst_ip, u16_t dst_port, struct netif *netif)
+{
+#if LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP
+  return udp_sendto_if_chksum(pcb, p, dst_ip, dst_port, netif, 0, 0);
+}
+
+/** Same as udp_sendto_if(), but with checksum */
+err_t
+udp_sendto_if_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
+                     u16_t dst_port, struct netif *netif, u8_t have_chksum,
+                     u16_t chksum)
+{
+#endif /* LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP */
+  const ip_addr_t *src_ip;
+
+  if (!IP_ADDR_PCB_VERSION_MATCH(pcb, dst_ip)) {
+    return ERR_VAL;
+  }
+
+  /* PCB local address is IP_ANY_ADDR or multicast? */
+    if (ip4_addr_isany(ip_2_ip4(&pcb->local_ip)) ||
+        ip4_addr_ismulticast(ip_2_ip4(&pcb->local_ip))) {
+      /* if the local_ip is any or multicast
+       * use the outgoing network interface IP address as source address */
+      src_ip = netif_ip_addr4(netif);
+    } else {
+      /* check if UDP PCB local IP address is correct
+       * this could be an old address if netif->ip_addr has changed */
+      if (!ip4_addr_cmp(ip_2_ip4(&(pcb->local_ip)), netif_ip4_addr(netif))) {
+        /* local_ip doesn't match, drop the packet */
+        return ERR_RTE;
+      }
+      /* use UDP PCB local IP address as source address */
+      src_ip = &pcb->local_ip;
+    }
+#if LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP
+  return udp_sendto_if_src_chksum(pcb, p, dst_ip, dst_port, netif, have_chksum, chksum, src_ip);
+#else /* LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP */
+  return udp_sendto_if_src(pcb, p, dst_ip, dst_port, netif, src_ip);
+#endif /* LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP */
+}
+
+udp_sendto_if_src(struct udp_pcb *pcb, struct pbuf *p,
+                  const ip_addr_t *dst_ip, u16_t dst_port, struct netif *netif, const ip_addr_t *src_ip)
+{
+#if LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP
+  return udp_sendto_if_src_chksum(pcb, p, dst_ip, dst_port, netif, 0, 0, src_ip);
+}
+
+/** Same as udp_sendto_if_src(), but with checksum */
+err_t
+udp_sendto_if_src_chksum(struct udp_pcb *pcb, struct pbuf *p, const ip_addr_t *dst_ip,
+                         u16_t dst_port, struct netif *netif, u8_t have_chksum,
+                         u16_t chksum, const ip_addr_t *src_ip)
+{
+#endif /* LWIP_CHECKSUM_ON_COPY && CHECKSUM_GEN_UDP */
+  struct udp_hdr *udphdr;
+  err_t err;
+  struct pbuf *q; /* q will be sent down the stack */
+  u8_t ip_proto;
+  u8_t ttl;
+
+  LWIP_ASSERT_CORE_LOCKED();
+
+  if (!IP_ADDR_PCB_VERSION_MATCH(pcb, src_ip) ||
+      !IP_ADDR_PCB_VERSION_MATCH(pcb, dst_ip)) {
+    return ERR_VAL;
+  }
+
+#if LWIP_IPV4 && IP_SOF_BROADCAST
+  /* broadcast filter? */
+  if (!ip_get_option(pcb, SOF_BROADCAST) &&
+      ip_addr_isbroadcast(dst_ip, netif)) {
+    return ERR_VAL;
+  }
+#endif /* LWIP_IPV4 && IP_SOF_BROADCAST */
+
+  /* if the PCB is not yet bound to a port, bind it here */
+  if (pcb->local_port == 0) {
+    err = udp_bind(pcb, &pcb->local_ip, pcb->local_port);
+    if (err != ERR_OK) {
+      return err;
+    }
+  }
+
+  /* packet too large to add a UDP header without causing an overflow? */
+  if ((u16_t)(p->tot_len + UDP_HLEN) < p->tot_len) {
+    return ERR_MEM;
+  }
+  /* not enough space to add an UDP header to first pbuf in given p chain? */
+  if (pbuf_add_header(p, UDP_HLEN)) {
+    /* allocate header in a separate new pbuf */
+    q = pbuf_alloc(PBUF_IP, UDP_HLEN, PBUF_RAM);
+    /* new header pbuf could not be allocated? */
+    if (q == NULL) {
+      return ERR_MEM;
+    }
+    if (p->tot_len != 0) {
+      /* chain header q in front of given pbuf p (only if p contains data) */
+      pbuf_chain(q, p);
+    }
+    /* first pbuf q points to header pbuf */    
+  } else {
+    /* adding space for header within p succeeded */
+    /* first pbuf q equals given pbuf */
+    q = p;
+  }
+  /* q now represents the packet to be sent */
+  udphdr = (struct udp_hdr *)q->payload;
+  udphdr->src = lwip_htons(pcb->local_port);
+  udphdr->dest = lwip_htons(dst_port);
+  /* in UDP, 0 checksum means 'no checksum' */
+  udphdr->chksum = 0x0000;
+
+  /* Multicast Loop? */
+#if LWIP_MULTICAST_TX_OPTIONS
+  if (((pcb->flags & UDP_FLAGS_MULTICAST_LOOP) != 0) && ip_addr_ismulticast(dst_ip)) {
+    q->flags |= PBUF_FLAG_MCASTLOOP;
+  }
+#endif /* LWIP_MULTICAST_TX_OPTIONS */
+  
+#if LWIP_UDPLITE
+  /* UDP Lite protocol? */
+  if (pcb->flags & UDP_FLAGS_UDPLITE) {
+    u16_t chklen, chklen_hdr;
+    /* set UDP message length in UDP header */
+    chklen_hdr = chklen = pcb->chksum_len_tx;
+    if ((chklen < sizeof(struct udp_hdr)) || (chklen > q->tot_len)) {
+      if (chklen != 0) {
+        
+      }
+      /* For UDP-Lite, checksum length of 0 means checksum
+         over the complete packet. (See RFC 3828 chap. 3.1)
+         At least the UDP-Lite header must be covered by the
+         checksum, therefore, if chksum_len has an illegal
+         value, we generate the checksum over the complete
+         packet to be safe. */
+      chklen_hdr = 0;
+      chklen = q->tot_len;
+    }
+    udphdr->len = lwip_htons(chklen_hdr);
+    /* calculate checksum */
+#if CHECKSUM_GEN_UDP
+    IF__NETIF_CHECKSUM_ENABLED(netif, NETIF_CHECKSUM_GEN_UDP) {
+#if LWIP_CHECKSUM_ON_COPY
+      if (have_chksum) {
+        chklen = UDP_HLEN;
+      }
+#endif /* LWIP_CHECKSUM_ON_COPY */
+      udphdr->chksum = ip_chksum_pseudo_partial(q, IP_PROTO_UDPLITE,
+                       q->tot_len, chklen, src_ip, dst_ip);
+#if LWIP_CHECKSUM_ON_COPY
+      if (have_chksum) {
+        u32_t acc;
+        acc = udphdr->chksum + (u16_t)~(chksum);
+        udphdr->chksum = FOLD_U32T(acc);
+      }
+#endif /* LWIP_CHECKSUM_ON_COPY */
+
+      /* chksum zero must become 0xffff, as zero means 'no checksum' */
+      if (udphdr->chksum == 0x0000) {
+        udphdr->chksum = 0xffff;
+      }
+    }
+#endif /* CHECKSUM_GEN_UDP */
+
+    ip_proto = IP_PROTO_UDPLITE;
+  } else
+#endif /* LWIP_UDPLITE */
+  {      /* UDP */
+    udphdr->len = lwip_htons(q->tot_len);
+    /* calculate checksum */
+#if CHECKSUM_GEN_UDP
+    IF__NETIF_CHECKSUM_ENABLED(netif, NETIF_CHECKSUM_GEN_UDP) {
+      /* Checksum is mandatory over IPv6. */
+      if (IP_IS_V6(dst_ip) || (pcb->flags & UDP_FLAGS_NOCHKSUM) == 0) {
+        u16_t udpchksum;
+#if LWIP_CHECKSUM_ON_COPY
+        if (have_chksum) {
+          u32_t acc;
+          udpchksum = ip_chksum_pseudo_partial(q, IP_PROTO_UDP,
+                                               q->tot_len, UDP_HLEN, src_ip, dst_ip);
+          acc = udpchksum + (u16_t)~(chksum);
+          udpchksum = FOLD_U32T(acc);
+        } else
+#endif /* LWIP_CHECKSUM_ON_COPY */
+        {
+          udpchksum = ip_chksum_pseudo(q, IP_PROTO_UDP, q->tot_len,
+                                       src_ip, dst_ip);
+        }
+
+        /* chksum zero must become 0xffff, as zero means 'no checksum' */
+        if (udpchksum == 0x0000) {
+          udpchksum = 0xffff;
+        }
+        udphdr->chksum = udpchksum;
+      }
+    }
+#endif /* CHECKSUM_GEN_UDP */
+    ip_proto = IP_PROTO_UDP;
+  }
+
+  /* Determine TTL to use */
+#if LWIP_MULTICAST_TX_OPTIONS
+  ttl = (ip_addr_ismulticast(dst_ip) ? udp_get_multicast_ttl(pcb) : pcb->ttl);
+#else /* LWIP_MULTICAST_TX_OPTIONS */
+  ttl = pcb->ttl;
+#endif /* LWIP_MULTICAST_TX_OPTIONS */
+
+  /* output to IP */
+  NETIF_SET_HINTS(netif, &(pcb->netif_hints));
+  err = ip_output_if_src(q, src_ip, dst_ip, ttl, pcb->tos, ip_proto, netif);
+  NETIF_RESET_HINTS(netif);
+
+  /* @todo: must this be increased even if error occurred? */
+  MIB2_STATS_INC(mib2.udpoutdatagrams);
+
+  /* did we chain a separate header pbuf earlier? */
+  if (q != p) {
+    /* free the header pbuf */
+    pbuf_free(q);
+    q = NULL;
+    /* p is still referenced by the caller, and will live on */
+  }
+
+  UDP_STATS_INC(udp.xmit);
+  return err;
+}
+```
+
+### 5）接收
+
+```C++
+void
+udp_input(struct pbuf *p, struct netif *inp)
+{
+  struct udp_hdr *udphdr;
+  struct udp_pcb *pcb, *prev;
+  struct udp_pcb *uncon_pcb;
+  u16_t src, dest;
+  u8_t broadcast;
+  u8_t for_us = 0;
+
+  /* Check minimum length (UDP header) */
+  if (p->len < UDP_HLEN) {
+    /* drop short packets */
+    UDP_STATS_INC(udp.lenerr);
+    UDP_STATS_INC(udp.drop);
+    MIB2_STATS_INC(mib2.udpinerrors);
+    pbuf_free(p);
+    goto end;
+  }
+
+  udphdr = (struct udp_hdr *)p->payload;
+
+  /* is broadcast packet ? */
+  broadcast = ip_addr_isbroadcast(ip_current_dest_addr(), ip_current_netif());
+
+  /* convert src and dest ports to host byte order */
+  src = lwip_ntohs(udphdr->src);
+  dest = lwip_ntohs(udphdr->dest);
+
+  udp_debug_print(udphdr);
+
+  pcb = NULL;
+  prev = NULL;
+  uncon_pcb = NULL;
+  /* Iterate through the UDP pcb list for a matching pcb.
+   * 'Perfect match' pcbs (connected to the remote port & ip address) are
+   * preferred. If no perfect match is found, the first unconnected pcb that
+   * matches the local port and ip address gets the datagram. */
+  for (pcb = udp_pcbs; pcb != NULL; pcb = pcb->next) {
+    /* compare PCB local addr+port to UDP destination addr+port */
+    if ((pcb->local_port == dest) &&
+        (udp_input_local_match(pcb, inp, broadcast) != 0)) {
+      if ((pcb->flags & UDP_FLAGS_CONNECTED) == 0) {
+        if (uncon_pcb == NULL) {
+          /* the first unconnected matching PCB */
+          uncon_pcb = pcb;
+#if LWIP_IPV4
+        } else if (broadcast && ip4_current_dest_addr()->addr == IPADDR_BROADCAST) {
+          /* global broadcast address (only valid for IPv4; match was checked before) */
+          if (!IP_IS_V4_VAL(uncon_pcb->local_ip) || !ip4_addr_cmp(ip_2_ip4(&uncon_pcb->local_ip), netif_ip4_addr(inp))) {
+            /* uncon_pcb does not match the input netif, check this pcb */
+            if (IP_IS_V4_VAL(pcb->local_ip) && ip4_addr_cmp(ip_2_ip4(&pcb->local_ip), netif_ip4_addr(inp))) {
+              /* better match */
+              uncon_pcb = pcb;
+            }
+          }
+#endif /* LWIP_IPV4 */
+        }
+#if SO_REUSE
+        else if (!ip_addr_isany(&pcb->local_ip)) {
+          /* prefer specific IPs over catch-all */
+          uncon_pcb = pcb;
+        }
+#endif /* SO_REUSE */
+      }
+
+      /* compare PCB remote addr+port to UDP source addr+port */
+      if ((pcb->remote_port == src) &&
+          (ip_addr_isany_val(pcb->remote_ip) ||
+           ip_addr_cmp(&pcb->remote_ip, ip_current_src_addr()))) {
+        /* the first fully matching PCB */
+        if (prev != NULL) {
+          /* move the pcb to the front of udp_pcbs so that is
+             found faster next time */
+          prev->next = pcb->next;
+          pcb->next = udp_pcbs;
+          udp_pcbs = pcb;
+        } else {
+          UDP_STATS_INC(udp.cachehit);
+        }
+        break;
+      }
+    }
+
+    prev = pcb;
+  }
+  /* no fully matching pcb found? then look for an unconnected pcb */
+  if (pcb == NULL) {
+    pcb = uncon_pcb;
+  }
+
+  /* Check checksum if this is a match or if it was directed at us. */
+  if (pcb != NULL) {
+    for_us = 1;
+  } else {
+#if LWIP_IPV6
+    if (ip_current_is_v6()) {
+      for_us = netif_get_ip6_addr_match(inp, ip6_current_dest_addr()) >= 0;
+    }
+#endif /* LWIP_IPV6 */
+#if LWIP_IPV4
+    if (!ip_current_is_v6()) {
+      for_us = ip4_addr_cmp(netif_ip4_addr(inp), ip4_current_dest_addr());
+    }
+#endif /* LWIP_IPV4 */
+  }
+
+  if (for_us) {    
+#if CHECKSUM_CHECK_UDP
+    IF__NETIF_CHECKSUM_ENABLED(inp, NETIF_CHECKSUM_CHECK_UDP) {
+#if LWIP_UDPLITE
+      if (ip_current_header_proto() == IP_PROTO_UDPLITE) {
+        /* Do the UDP Lite checksum */
+        u16_t chklen = lwip_ntohs(udphdr->len);
+        if (chklen < sizeof(struct udp_hdr)) {
+          if (chklen == 0) {
+            /* For UDP-Lite, checksum length of 0 means checksum
+               over the complete packet (See RFC 3828 chap. 3.1) */
+            chklen = p->tot_len;
+          } else {
+            /* At least the UDP-Lite header must be covered by the
+               checksum! (Again, see RFC 3828 chap. 3.1) */
+            goto chkerr;
+          }
+        }
+        if (ip_chksum_pseudo_partial(p, IP_PROTO_UDPLITE,
+                                     p->tot_len, chklen,
+                                     ip_current_src_addr(), ip_current_dest_addr()) != 0) {
+          goto chkerr;
+        }
+      } else
+#endif /* LWIP_UDPLITE */
+      {
+        if (udphdr->chksum != 0) {
+          if (ip_chksum_pseudo(p, IP_PROTO_UDP, p->tot_len,
+                               ip_current_src_addr(),
+                               ip_current_dest_addr()) != 0) {
+            goto chkerr;
+          }
+        }
+      }
+    }
+#endif /* CHECKSUM_CHECK_UDP */
+    if (pbuf_remove_header(p, UDP_HLEN)) {
+      /* Can we cope with this failing? Just assert for now */
+      UDP_STATS_INC(udp.drop);
+      MIB2_STATS_INC(mib2.udpinerrors);
+      pbuf_free(p);
+      goto end;
+    }
+
+    if (pcb != NULL) {
+      MIB2_STATS_INC(mib2.udpindatagrams);
+#if SO_REUSE && SO_REUSE_RXTOALL
+      if (ip_get_option(pcb, SOF_REUSEADDR) &&
+          (broadcast || ip_addr_ismulticast(ip_current_dest_addr()))) {
+        /* pass broadcast- or multicast packets to all multicast pcbs
+           if SOF_REUSEADDR is set on the first match */
+        struct udp_pcb *mpcb;
+        for (mpcb = udp_pcbs; mpcb != NULL; mpcb = mpcb->next) {
+          if (mpcb != pcb) {
+            /* compare PCB local addr+port to UDP destination addr+port */
+            if ((mpcb->local_port == dest) &&
+                (udp_input_local_match(mpcb, inp, broadcast) != 0)) {
+              /* pass a copy of the packet to all local matches */
+              if (mpcb->recv != NULL) {
+                struct pbuf *q;
+                q = pbuf_clone(PBUF_RAW, PBUF_POOL, p);
+                if (q != NULL) {
+                  mpcb->recv(mpcb->recv_arg, mpcb, q, ip_current_src_addr(), src);
+                }
+              }
+            }
+          }
+        }
+      }
+#endif /* SO_REUSE && SO_REUSE_RXTOALL */
+      /* callback */
+      if (pcb->recv != NULL) {
+        /* now the recv function is responsible for freeing p */
+        pcb->recv(pcb->recv_arg, pcb, p, ip_current_src_addr(), src);
+      } else {
+        /* no recv function registered? then we have to free the pbuf! */
+        pbuf_free(p);
+        goto end;
+      }
+    } else {
+  
+#if LWIP_ICMP || LWIP_ICMP6
+      /* No match was found, send ICMP destination port unreachable unless
+         destination address was broadcast/multicast. */
+      if (!broadcast && !ip_addr_ismulticast(ip_current_dest_addr())) {
+        /* move payload pointer back to ip header */
+        pbuf_header_force(p, (s16_t)(ip_current_header_tot_len() + UDP_HLEN));
+        icmp_port_unreach(ip_current_is_v6(), p);
+      }
+#endif /* LWIP_ICMP || LWIP_ICMP6 */
+      UDP_STATS_INC(udp.proterr);
+      UDP_STATS_INC(udp.drop);
+      MIB2_STATS_INC(mib2.udpnoports);
+      pbuf_free(p);
+    }
+  } else {
+    pbuf_free(p);
+  }
+end:
+  PERF_STOP("udp_input");
+  return;
+#if CHECKSUM_CHECK_UDP
+chkerr:
+  UDP_STATS_INC(udp.chkerr);
+  UDP_STATS_INC(udp.drop);
+  MIB2_STATS_INC(mib2.udpinerrors);
+  pbuf_free(p);
+  PERF_STOP("udp_input");
+#endif /* CHECKSUM_CHECK_UDP */
+}
+```
+
+## 15、使用NetConn接口编程
+
+### 1）简介
+
+- pbuf是对用户透明的
+- 用户端的网络数据基于netbuf进行封装
+- lwipopts.h启用 `#define LWIP_NETCONN 1  `
+
+### 2）netbuf结构体
+
+```C++
+struct netbuf {
+  struct pbuf *p, *ptr;
+  ip_addr_t addr;
+  u16_t port;
+#if LWIP_NETBUF_RECVINFO || LWIP_CHECKSUM_ON_COPY
+  u8_t flags;
+  u16_t toport_chksum;
+#if LWIP_NETBUF_RECVINFO
+  ip_addr_t toaddr;
+#endif /* LWIP_NETBUF_RECVINFO */
+#endif /* LWIP_NETBUF_RECVINFO || LWIP_CHECKSUM_ON_COPY */
+};
+```
+
+- addr：数据发送方的ip地址
+- port：数据发送方的端口号
+- p：指向pbuf链表
+- ptr：指向pbuf，由netbuf_next、netbuf_first函数控制
+
+### 3）netbuf相关函数说明
+
+- netbuf_new：申请新的netbuf结构体内存空间
+
+  ```C++
+  struct netbuf *netbuf_new(void)
+  {
+    struct netbuf *buf;
+  
+    buf = (struct netbuf *)memp_malloc(MEMP_NETBUF);
+    if (buf != NULL) {
+      memset(buf, 0, sizeof(struct netbuf));
+    }
+    return buf;
+  }
+  ```
+
+- netbuf_delete：释放netbuf结构体内存空间
+
+  ```C++
+  void netbuf_delete(struct netbuf *buf)
+  {
+    if (buf != NULL) {
+      if (buf->p != NULL) {
+        pbuf_free(buf->p);
+        buf->p = buf->ptr = NULL;
+      }
+      memp_free(MEMP_NETBUF, buf);
+    }
+  }    
+  ```
+
+- netbuf_alloc：为p字段分配指定大小的内存空间
+
+  ```C++
+  void * netbuf_alloc(struct netbuf *buf, u16_t size)
+  {
+    /* Deallocate any previously allocated memory. */
+    if (buf->p != NULL) {
+      pbuf_free(buf->p);
+    }
+    buf->p = pbuf_alloc(PBUF_TRANSPORT, size, PBUF_RAM);
+    if (buf->p == NULL) {
+      return NULL;
+    }
+    buf->ptr = buf->p;
+    return buf->p->payload;
+  }
+  ```
+
+- netbuf_free：释放p指向的内存空间
+
+  ```C++
+  void netbuf_free(struct netbuf *buf)
+  {
+    LWIP_ERROR("netbuf_free: invalid buf", (buf != NULL), return;);
+    if (buf->p != NULL) {
+      pbuf_free(buf->p);
+    }
+    buf->p = buf->ptr = NULL;
+  #if LWIP_CHECKSUM_ON_COPY
+    buf->flags = 0;
+    buf->toport_chksum = 0;
+  #endif /* LWIP_CHECKSUM_ON_COPY */
+  }
+  ```
+
+- netbuf_ref：静态数据初始化
+
+  ```C++
+  err_t netbuf_ref(struct netbuf *buf, const void *dataptr, u16_t size)
+  {
+    if (buf->p != NULL) {
+      pbuf_free(buf->p);
+    }
+    buf->p = pbuf_alloc(PBUF_TRANSPORT, 0, PBUF_REF);
+    if (buf->p == NULL) {
+      buf->ptr = NULL;
+      return ERR_MEM;
+    }
+    ((struct pbuf_rom *)buf->p)->payload = dataptr;
+    buf->p->len = buf->p->tot_len = size;
+    buf->ptr = buf->p;
+    return ERR_OK;
+  }
+  ```
+
+- netbuf_chain：合成链表
+
+  ```C++
+  void netbuf_chain(struct netbuf *head, struct netbuf *tail)
+  {
+    pbuf_cat(head->p, tail->p);
+    head->ptr = head->p;
+    memp_free(MEMP_NETBUF, tail);
+  }
+  ```
+
+- netbuf_data：获取数据
+
+  ```C++
+  err_t netbuf_data(struct netbuf *buf, void **dataptr, u16_t *len)
+  {
+    if (buf->ptr == NULL) {
+      return ERR_BUF;
+    }
+    *dataptr = buf->ptr->payload;
+    *len = buf->ptr->len;
+    return ERR_OK;
+  }
+  ```
+
+- netbuf_next、netbuf_first：移动ptr指针
+
+  ```C++
+  s8_t
+  netbuf_next(struct netbuf *buf)
+  {
+    if (buf->ptr->next == NULL) {
+      return -1;
+    }
+    buf->ptr = buf->ptr->next;
+    if (buf->ptr->next == NULL) {
+      return 1;
+    }
+    return 0;
+  }
+  
+  /**
+   * @ingroup netbuf
+   * Move the current data pointer of a packet buffer contained in a netbuf
+   * to the beginning of the packet.
+   * The packet buffer itself is not modified.
+   *
+   * @param buf the netbuf to modify
+   */
+  void
+  netbuf_first(struct netbuf *buf)
+  {
+    buf->ptr = buf->p;
+  }
+  ```
+  
+- 其他
+
+  ```C++
+  #define netbuf_copy_partial(buf, dataptr, len, offset) \
+    pbuf_copy_partial((buf)->p, (dataptr), (len), (offset))
+  #define netbuf_copy(buf,dataptr,len) netbuf_copy_partial(buf, dataptr, len, 0)
+  #define netbuf_take(buf, dataptr, len) pbuf_take((buf)->p, dataptr, len)
+  #define netbuf_len(buf)              ((buf)->p->tot_len)
+  #define netbuf_fromaddr(buf)         (&((buf)->addr))
+  #define netbuf_set_fromaddr(buf, fromaddr) ip_addr_set(&((buf)->addr), fromaddr)
+  #define netbuf_fromport(buf)         ((buf)->port)
+  #if LWIP_NETBUF_RECVINFO
+  #define netbuf_destaddr(buf)         (&((buf)->toaddr))
+  #define netbuf_set_destaddr(buf, destaddr) ip_addr_set(&((buf)->toaddr), destaddr)
+  #if LWIP_CHECKSUM_ON_COPY
+  #define netbuf_destport(buf)         (((buf)->flags & NETBUF_FLAG_DESTADDR) ? (buf)->toport_chksum : 0)
+  #else /* LWIP_CHECKSUM_ON_COPY */
+  #define netbuf_destport(buf)         ((buf)->toport_chksum)
+  #endif /* LWIP_CHECKSUM_ON_COPY */
+  #endif /* LWIP_NETBUF_RECVINFO */
+  #if LWIP_CHECKSUM_ON_COPY
+  #define netbuf_set_chksum(buf, chksum) do { (buf)->flags = NETBUF_FLAG_CHKSUM; \
+                                              (buf)->toport_chksum = chksum; } while(0)
+  ```
+
+### 4）netconn结构体
+
+  用于描述一个TCP或UDP连接
+
+```C++
+struct netconn {
+  /** type of the netconn (TCP, UDP or RAW) */
+  enum netconn_type type;
+  /** current state of the netconn */
+  enum netconn_state state;
+  /** the lwIP internal protocol control block */
+  union {
+    struct ip_pcb  *ip;
+    struct tcp_pcb *tcp;
+    struct udp_pcb *udp;
+    struct raw_pcb *raw;
+  } pcb;
+  /** the last asynchronous unreported error this netconn had */
+  err_t pending_err;
+#if !LWIP_NETCONN_SEM_PER_THREAD
+  /** sem that is used to synchronously execute functions in the core context */
+  sys_sem_t op_completed;
+#endif
+  /** mbox where received packets are stored until they are fetched
+      by the netconn application thread (can grow quite big) */
+  sys_mbox_t recvmbox;
+#if LWIP_TCP
+  /** mbox where new connections are stored until processed
+      by the application thread */
+  sys_mbox_t acceptmbox;
+#endif /* LWIP_TCP */
+#if LWIP_NETCONN_FULLDUPLEX
+  /** number of threads waiting on an mbox. This is required to unblock
+      all threads when closing while threads are waiting. */
+  int mbox_threads_waiting;
+#endif
+  /** only used for socket layer */
+#if LWIP_SOCKET
+  int socket;
+#endif /* LWIP_SOCKET */
+#if LWIP_SO_SNDTIMEO
+  /** timeout to wait for sending data (which means enqueueing data for sending
+      in internal buffers) in milliseconds */
+  s32_t send_timeout;
+#endif /* LWIP_SO_RCVTIMEO */
+#if LWIP_SO_RCVTIMEO
+  /** timeout in milliseconds to wait for new data to be received
+      (or connections to arrive for listening netconns) */
+  u32_t recv_timeout;
+#endif /* LWIP_SO_RCVTIMEO */
+#if LWIP_SO_RCVBUF
+  /** maximum amount of bytes queued in recvmbox
+      not used for TCP: adjust TCP_WND instead! */
+  int recv_bufsize;
+  /** number of bytes currently in recvmbox to be received,
+      tested against recv_bufsize to limit bytes on recvmbox
+      for UDP and RAW, used for FIONREAD */
+  int recv_avail;
+#endif /* LWIP_SO_RCVBUF */
+#if LWIP_SO_LINGER
+   /** values <0 mean linger is disabled, values > 0 are seconds to linger */
+  s16_t linger;
+#endif /* LWIP_SO_LINGER */
+  /** flags holding more netconn-internal state, see NETCONN_FLAG_* defines */
+  u8_t flags;
+#if LWIP_TCP
+  /** TCP: when data passed to netconn_write doesn't fit into the send buffer,
+      this temporarily stores the message.
+      Also used during connect and close. */
+  struct api_msg *current_msg;
+#endif /* LWIP_TCP */
+  /** A callback function that is informed about events for this netconn */
+  netconn_callback callback;
+};
+```
+
+### 5）netconn函数接口
+
+- netconn_new
+
+  ```C++
+  enum netconn_type {
+    NETCONN_INVALID     = 0,
+    /** TCP IPv4 */
+    NETCONN_TCP         = 0x10,
+    /** UDP IPv4 */
+    NETCONN_UDP         = 0x20,
+    /** UDP IPv4 lite */
+    NETCONN_UDPLITE     = 0x21,
+    /** UDP IPv4 no checksum */
+    NETCONN_UDPNOCHKSUM = 0x22,
+      
+    /** Raw connection IPv4 */
+    NETCONN_RAW         = 0x40
+  };
+  
+  struct netconn* netconn_new_with_proto_and_callback(enum netconn_type t, u8_t proto, netconn_callback callback);
+  
+  #define 	netconn_new(t)   netconn_new_with_proto_and_callback(t, 0, NULL)
+  ```
+
+- netconn_delete
+
+  ```C++
+  err_t   netconn_delete(struct netconn *conn);
+  ```
+
+- 常用函数
+
+  ```C++
+  err_t netconn_getaddr(struct netconn *conn, ip_addr_t *addr, u16_t *port, u8_t local);
+  
+  //TCP/UDP/RAW
+  err_t netconn_bind(struct netconn *conn, const ip_addr_t *addr, u16_t port);
+  
+  //TCP/UDP/RAW
+  err_t netconn_connect(struct netconn *conn, const ip_addr_t *addr, u16_t port);
+  
+  //UDP
+  err_t netconn_disconnect(struct netconn *conn);
+  
+  //TCP
+  #define TCP_DEFAULT_LISTEN_BACKLOG      0xff
+  err_t netconn_listen_with_backlog(struct netconn *conn, u8_t backlog);
+  
+  //TCP
+  #define netconn_listen(conn) netconn_listen_with_backlog(conn, TCP_DEFAULT_LISTEN_BACKLOG)
+  
+  //TCP
+  err_t netconn_accept(struct netconn *conn, struct netconn **new_conn);
+  
+  //UDP/RAW
+  err_t netconn_send(struct netconn *conn, struct netbuf *buf);
+  
+  //UDP/RAW
+  err_t netconn_sendto(struct netconn *conn, struct netbuf *buf, const ip_addr_t *addr, u16_t port);
+  
+  //TCP/UDP/RAW
+  err_t netconn_recv(struct netconn *conn, struct netbuf **new_buf);
+  
+  //TCP
+  err_t netconn_write_partly(struct netconn *conn, const void *dataptr, size_t size, u8_t apiflags, size_t *bytes_written);
+  
+  //TCP
+  #define netconn_write(conn, dataptr, size, apiflags) \
+            netconn_write_partly(conn, dataptr, size, apiflags, NULL)
+  
+  //TCP
+  err_t   netconn_close(struct netconn *conn);
+  
+  //TCP
+  err_t 	netconn_shutdown (struct netconn *conn, u8_t shut_rx, u8_t shut_tx);
+  ```
+
+### 6）TCP Client
+
+```C++
+#include "lwip/opt.h"
+
+#include "lwip/sys.h"
+#include "lwip/api.h"
+
+static void tcp_client(void *thread_param)
+{
+    struct netconn *conn;
+    int ret;
+    ip4_addr_t ipaddr;
+
+    uint8_t send_buf[] = "This is a TCP Client test...\n";
+
+    while
+    {
+        conn = netconn_new(NETCONN_TCP);
+        if (conn == NULL)
+        {
+            printf("create conn failed!\n");
+            vTaskDelay(10);
+            continue;
+        }
+
+        IP4_ADDR(&ipaddr, 192, 168, 0, 181);
+        ret = netconn_connect(conn, &ipaddr, 5001);
+        if (ret == -1)
+        {
+            printf("Connect failed!\n");
+            netconn_close(conn);
+            vTaskDelay(10);
+            continue;
+        }
+
+        printf("Connect to iperf server successful!\n");
+
+        while (1)
+        {
+            ret = netconn_write(conn, send_buf, sizeof(send_buf), 0);
+
+            vTaskDelay(1000);
+        }
+    }
+}
+
+void client_init(void)
+{
+    sys_thread_new("tcp_client", tcp_client, NULL, 512, 4);
+}
+```
+
+### 7）TCP Server
+
+```C++
+#include "lwip/opt.h"
+
+#include "lwip/sys.h"
+#include "lwip/api.h"
+static void tcpecho_thread(void *arg)
+{
+    struct netconn *conn, *newconn;
+    err_t err;
+    LWIP_UNUSED_ARG(arg);
+
+/* Create a new connection identifier. */
+/* Bind connection to well known port number 7. */
+#if LWIP_IPV6
+    conn = netconn_new(NETCONN_TCP_IPV6);
+    netconn_bind(conn, IP6_ADDR_ANY, 5001);
+#else  /* LWIP_IPV6 */
+    conn = netconn_new(NETCONN_TCP);
+    netconn_bind(conn, IP_ADDR_ANY, 5001);
+#endif /* LWIP_IPV6 */
+    LWIP_ERROR("tcpecho: invalid conn", (conn != NULL), return;);
+
+    /* Tell connection to go into listening mode. */
+    netconn_listen(conn);
+    while (1)
+    {
+
+        /* Grab new connection. */
+        err = netconn_accept(conn, &newconn);
+        /*printf("accepted new connection %p\n", newconn);*/
+        /* Process the new connection. */
+        if (err == ERR_OK)
+        {
+            struct netbuf *buf;
+            void *data;
+            u16_t len;
+
+            while ((err = netconn_recv(newconn, &buf)) == ERR_OK)
+            {
+                /*printf("Recved\n");*/
+                do
+                {
+                    netbuf_data(buf, &data, &len);
+                    err = netconn_write(newconn, data, len, NETCONN_COPY);
+
+                    if (err != ERR_OK)
+                    {
+                        printf("tcpecho: netconn_write: error \"%s\"\n",
+                               lwip_strerr(err));
+                    }
+                } while (netbuf_next(buf) >= 0);
+                netbuf_delete(buf);
+            }
+            /*printf("Got EOF, looping\n");*/
+            /* Close connection and discard connection identifier. */
+            netconn_close(newconn);
+            netconn_delete(newconn);
+        }
+    }
+}
+
+void tcpecho_init(void)
+{
+    sys_thread_new("tcpecho_thread", tcpecho_thread, NULL, 512, 4);
+}
+```
+
+### 8）UDP
+
+```C++
+#include "lwip/opt.h"
+
+#include "lwip/api.h"
+#include "lwip/sys.h"
+
+static void
+udpecho_thread(void *arg)
+{
+    struct netconn *conn;
+    struct netbuf *buf;
+    char buffer[4096];
+    err_t err;
+    LWIP_UNUSED_ARG(arg);
+
+#if LWIP_IPV6
+    conn = netconn_new(NETCONN_UDP_IPV6);
+    netconn_bind(conn, IP6_ADDR_ANY, 5001);
+#else  /* LWIP_IPV6 */
+    conn = netconn_new(NETCONN_UDP);
+    netconn_bind(conn, IP_ADDR_ANY, 5001);
+#endif /* LWIP_IPV6 */
+    LWIP_ERROR("udpecho: invalid conn", (conn != NULL), return;);
+
+    while (1)
+    {
+        err = netconn_recv(conn, &buf);
+        if (err == ERR_OK)
+        {
+            if (netbuf_copy(buf, buffer, sizeof(buffer)) != buf->p->tot_len)
+            {
+                LWIP_DEBUGF(LWIP_DBG_ON, ("netbuf_copy failed\n"));
+            }
+            else
+            {
+                buffer[buf->p->tot_len] = '\0';
+                err = netconn_send(conn, buf);
+                if (err != ERR_OK)
+                {
+                    LWIP_DEBUGF(LWIP_DBG_ON, ("netconn_send failed: %d\n", (int)err));
+                }
+                else
+                {
+                    LWIP_DEBUGF(LWIP_DBG_ON, ("got %s\n", buffer));
+                }
+            }
+            netbuf_delete(buf);
+        }
+    }
+}
+
+void udpecho_init(void)
+{
+    sys_thread_new("udpecho_thread", udpecho_thread, NULL, 2048, 4);
+}
+
+```
+
+## 16、使用Socket接口编程
+
+### 1）简介
+
+- 基于netconn的再次封装
+- 最多提供MEMP_NUM_NETCONN个socket
+- lwipopts.h启用 `#define LWIP_SOCKET 1  `
+
+### 2）TCP Client
+
+```C++
+#include "client.h"
+
+#include "lwip/opt.h"
+
+#include "lwip/sys.h"
+#include "lwip/api.h"
+
+#include "lwip/sockets.h"
+
+#define PORT 5001
+#define IP_ADDR "192.168.0.181"
+
+static void client(void *thread_param)
+{
+    int sock = -1;
+    struct sockaddr_in client_addr;
+
+    uint8_t send_buf[] = "This is a TCP Client test...\n";
+
+    while (1)
+    {
+        sock = socket(AF_INET, SOCK_STREAM, 0);
+        if (sock < 0)
+        {
+            printf("Socket error\n");
+            vTaskDelay(10);
+            continue;
+        }
+
+        client_addr.sin_family = AF_INET;
+        client_addr.sin_port = htons(PORT);
+        client_addr.sin_addr.s_addr = inet_addr(IP_ADDR);
+        memset(&(client_addr.sin_zero), 0, sizeof(client_addr.sin_zero));
+
+        if (connect(sock,
+                    (struct sockaddr *)&client_addr,
+                    sizeof(struct sockaddr)) == -1)
+        {
+            printf("Connect failed!\n");
+            closesocket(sock);
+            vTaskDelay(10);
+            continue;
+        }
+
+        printf("Connect to iperf server successful!\n");
+
+        while (1)
+        {
+            if (write(sock, send_buf, sizeof(send_buf)) < 0)
+                break;
+
+            vTaskDelay(1000);
+        }
+
+        closesocket(sock);
+    }
+}
+
+void client_init(void)
+{
+    sys_thread_new("client", client, NULL, 512, 4);
+}
+```
+
+### 3）TCP Server
+
+```C++
+#include "lwip/opt.h"
+#include "lwip/sockets.h"
+
+#include "lwip/sys.h"
+#include "lwip/api.h"
+
+#define PORT 5001
+#define RECV_DATA (1024)
+
+static void
+tcpecho_thread(void *arg)
+{
+    int sock = -1, connected;
+    char *recv_data;
+    struct sockaddr_in server_addr, client_addr;
+    socklen_t sin_size;
+    int recv_data_len;
+
+    recv_data = (char *)pvPortMalloc(RECV_DATA);
+    if (recv_data == NULL)
+    {
+        printf("No memory\n");
+        goto __exit;
+    }
+
+    sock = socket(AF_INET, SOCK_STREAM, 0);
+    if (sock < 0)
+    {
+        printf("Socket error\n");
+        goto __exit;
+    }
+
+    server_addr.sin_family = AF_INET;
+    server_addr.sin_addr.s_addr = INADDR_ANY;
+    server_addr.sin_port = htons(PORT);
+    memset(&(server_addr.sin_zero), 0, sizeof(server_addr.sin_zero));
+
+    if (bind(sock, (struct sockaddr *)&server_addr, sizeof(struct sockaddr)) == -1)
+    {
+        printf("Unable to bind\n");
+        goto __exit;
+    }
+
+    if (listen(sock, 5) == -1)
+    {
+        printf("Listen error\n");
+        goto __exit;
+    }
+
+    while (1)
+    {
+        sin_size = sizeof(struct sockaddr_in);
+
+        connected = accept(sock, (struct sockaddr *)&client_addr, &sin_size);
+
+        printf("new client connected from (%s, %d)\n",
+               inet_ntoa(client_addr.sin_addr), ntohs(client_addr.sin_port));
+        {
+            int flag = 1;
+
+            setsockopt(connected,
+                       IPPROTO_TCP,   /* set option at TCP level */
+                       TCP_NODELAY,   /* name of option */
+                       (void *)&flag, /* the cast is historical cruft */
+                       sizeof(int));  /* length of option value */
+        }
+
+        while (1)
+        {
+            recv_data_len = recv(connected, recv_data, RECV_DATA, 0);
+
+            if (recv_data_len <= 0)
+                break;
+
+            printf("recv %d len data\n", recv_data_len);
+
+            write(connected, recv_data, recv_data_len);
+        }
+        if (connected >= 0)
+            closesocket(connected);
+
+        connected = -1;
+    }
+__exit:
+    if (sock >= 0)
+        closesocket(sock);
+    if (recv_data)
+        free(recv_data);
+}
+
+void tcpecho_init(void)
+{
+    sys_thread_new("tcpecho_thread", tcpecho_thread, NULL, 512, 4);
+}
+```
+
+### 4）UDP
+
+```C++
+#include "udpecho.h"
+
+#include "lwip/opt.h"
+
+#include <lwip/sockets.h>
+#include "lwip/api.h"
+#include "lwip/sys.h"
+
+#define PORT 5001
+#define RECV_DATA (1024)
+
+static void
+udpecho_thread(void *arg)
+{
+    int sock = -1;
+    char *recv_data;
+    struct sockaddr_in udp_addr, seraddr;
+    int recv_data_len;
+    socklen_t addrlen;
+
+    while (1)
+    {
+        recv_data = (char *)pvPortMalloc(RECV_DATA);
+        if (recv_data == NULL)
+        {
+            printf("No memory\n");
+            goto __exit;
+        }
+
+        sock = socket(AF_INET, SOCK_DGRAM, 0);
+        if (sock < 0)
+        {
+            printf("Socket error\n");
+            goto __exit;
+        }
+
+        udp_addr.sin_family = AF_INET;
+        udp_addr.sin_addr.s_addr = INADDR_ANY;
+        udp_addr.sin_port = htons(PORT);
+        memset(&(udp_addr.sin_zero), 0, sizeof(udp_addr.sin_zero));
+
+        if (bind(sock, (struct sockaddr *)&udp_addr, sizeof(struct sockaddr)) == -1)
+        {
+            printf("Unable to bind\n");
+            goto __exit;
+        }
+        while (1)
+        {
+            recv_data_len = recvfrom(sock, recv_data,
+                                     RECV_DATA, 0,
+                                     (struct sockaddr *)&seraddr,
+                                     &addrlen);
+
+            /*显示发送端的 IP 地址*/
+            printf("receive from %s\n", inet_ntoa(seraddr.sin_addr));
+
+            /*显示发送端发来的字串*/
+            printf("recevce:%s", recv_data);
+
+            /*将字串返回给发送端*/
+            sendto(sock, recv_data,
+                   recv_data_len, 0,
+                   (struct sockaddr *)&seraddr,
+                   addrlen);
+        }
+
+    __exit:
+        if (sock >= 0)
+            closesocket(sock);
+        if (recv_data)
+            free(recv_data);
+    }
+}
+
+void udpecho_init(void)
+{
+    sys_thread_new("udpecho_thread", udpecho_thread, NULL, 2048, 4);
+}
+```
+
+## 17、使用RAW API接口编程
+
+### 1）简介
+
+- 基于回调的底层API接口
+- RAW API的核心就是对控制块的处理
+
+### 2）TCP Client
+
+```C++
+#include "tcpclient.h"
+#include "lwip/netif.h"
+#include "lwip/ip.h"
+#include "lwip/tcp.h"
+#include "lwip/init.h"
+#include "netif/etharp.h"
+#include "lwip/udp.h"
+#include "lwip/pbuf.h"
+#include <stdio.h>
+#include <string.h>
+
+static struct tcp_pcb *client_pcb = NULL;
+
+static void client_err(void *arg, err_t err)
+{
+    printf("connect error! closed by core!!\n");
+    printf("try to connect to server again!!\n");
+
+    //连接失败的时候释放 TCP 控制块的内存
+    tcp_close(client_pcb);
+
+    //重新连接
+    TCP_Client_Init();
+}
+
+static err_t client_send(void *arg, struct tcp_pcb *tpcb)
+{
+    uint8_t send_buf[] = "This is a TCP Client test...\n";
+
+    tcp_write(tpcb, send_buf, sizeof(send_buf), 1);
+
+    return ERR_OK;
+}
+
+static err_t client_recv(void *arg,
+                         struct tcp_pcb *tpcb,
+                         struct pbuf *p,
+                         err_t err)
+{
+    if (p != NULL)
+    {
+        /* 更新窗口 */
+        tcp_recved(tpcb, p->tot_len);
+
+        /* 返回接收到的数据*/
+        tcp_write(tpcb, p->payload, p->tot_len, 1);
+
+        memset(p->payload, 0, p->tot_len);
+        pbuf_free(p);
+    }
+    else if (err == ERR_OK)
+    {
+        //服务器断开连接
+        printf("server has been disconnected!\n");
+        tcp_close(tpcb);
+
+        //重新连接
+        TCP_Client_Init();
+    }
+    return ERR_OK;
+}
+
+static err_t client_connected(void *arg,
+                              struct tcp_pcb *pcb,
+                              err_t err)
+{
+    printf("connected ok!\n");
+
+    //注册一个周期性回调函数
+    tcp_poll(pcb, client_send, 2);
+
+    //注册一个接收函数
+    tcp_recv(pcb, client_recv);
+
+    return ERR_OK;
+}
+
+void TCP_Client_Init(void)
+{
+    ip4_addr_t server_ip;
+    /* 创建一个 TCP 控制块 */
+    client_pcb = tcp_new();
+
+    IP4_ADDR(&server_ip, 192, 168, 0, 181);
+
+    printf("client start connect!\n");
+
+    //开始连接
+    tcp_connect(client_pcb,
+                &server_ip,
+                TCP_CLIENT_PORT,
+                client_connected);
+
+    tcp_err(client_pcb, client_err);
+}
+```
+
+### 3）TCP Server
+
+```C++
+#include "tcpecho.h"
+#include "lwip/netif.h"
+#include "lwip/ip.h"
+#include "lwip/tcp.h"
+#include "lwip/init.h"
+#include "netif/etharp.h"
+#include "lwip/udp.h"
+#include "lwip/pbuf.h"
+#include <stdio.h>
+#include <string.h>
+
+static err_t tcpecho_recv(void *arg,
+                          struct tcp_pcb *tpcb,
+                          struct pbuf *p,
+                          err_t err)
+{
+    if (p != NULL)
+    {
+        /* 更新窗口*/
+        tcp_recved(tpcb, p->tot_len);
+
+        /* 返回接收到的数据*/
+        tcp_write(tpcb, p->payload, p->tot_len, 1);
+
+        memset(p->payload, 0, p->tot_len);
+        pbuf_free(p);
+    }
+    else if (err == ERR_OK)
+    {
+        return tcp_close(tpcb);
+    }
+    return ERR_OK;
+}
+
+static err_t tcpecho_accept(void *arg,
+                            struct tcp_pcb *newpcb,
+                            err_t err)
+{
+
+    tcp_recv(newpcb, tcpecho_recv);
+    return ERR_OK;
+}
+
+void TCP_Echo_Init(void)
+{
+    struct tcp_pcb *pcb = NULL;
+
+    /* 创建一个 TCP 控制块 */
+    pcb = tcp_new();
+
+    /* 绑定 TCP 控制块 */
+    tcp_bind(pcb, IP_ADDR_ANY, TCP_ECHO_PORT);
+
+    /* 进入监听状态 */
+    pcb = tcp_listen(pcb);
+
+    /* 处理连接 */
+    tcp_accept(pcb, tcpecho_accept);
+}
+```
+
+### 4）UDP
+
+```C++
+#include "lwip/netif.h"
+#include "lwip/ip.h"
+#include "lwip/tcp.h"
+#include "lwip/init.h"
+#include "netif/etharp.h"
+#include "lwip/udp.h"
+#include "lwip/pbuf.h"
+#include <stdio.h>
+
+static void udp_demo_callback(void *arg,
+                              struct udp_pcb *upcb,
+                              struct pbuf *p,
+                              const ip_addr_t *addr,
+                              u16_t port)
+{
+    struct pbuf *q = NULL;
+    const char *reply = "This is reply!\n";
+
+    if (arg)
+    {
+        printf("%s", (char *)arg);
+    }
+
+    pbuf_free(p);
+
+    q = pbuf_alloc(PBUF_TRANSPORT, strlen(reply) + 1, PBUF_RAM);
+    if (!q)
+    {
+        printf("out of PBUF_RAM\n");
+        return;
+    }
+
+    memset(q->payload, 0, q->len);
+    memcpy(q->payload, reply, strlen(reply));
+    udp_sendto(upcb, q, addr, port);
+    pbuf_free(q);
+}
+
+static char *st_buffer = "We get a data\n";
+void UDP_Echo_Init(void)
+{
+    struct udp_pcb *udpecho_pcb;
+    /* 新建一个控制块*/
+    udpecho_pcb = udp_new();
+
+    /* 绑定端口号 */
+    udp_bind(udpecho_pcb, IP_ADDR_ANY, UDP_ECHO_PORT);
+
+    /* 注册接收数据回调函数 */
+    udp_recv(udpecho_pcb, udp_demo_callback, (void *)st_buffer);
+}
+```
+
+
 
