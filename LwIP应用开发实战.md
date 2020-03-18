@@ -3928,6 +3928,7 @@ void udpecho_init(void)
 - 基于netconn的再次封装
 - 最多提供MEMP_NUM_NETCONN个socket
 - lwipopts.h启用 `#define LWIP_SOCKET 1  `
+- 接收效率为NetConn的75%左右，发送效率和NetConn基本一致
 
 ### 2）TCP Client
 
@@ -4405,5 +4406,728 @@ void UDP_Echo_Init(void)
 }
 ```
 
+## 18、使用JPerf测试网速
 
+### 1）JPerf测试
+
+- 基于iPerf的GUI工具
+
+### 2）网速优化
+
+- 网速受限于硬件，选好一点的网卡
+
+- stm32f4xx_hal_config.h配置以太网发送和接收缓冲区大小
+
+  ```C++
+  //默认4，可以改为8
+  #define ETH_RXBUFNB                    ((uint32_t)8U)       
+  #define ETH_TXBUFNB                    ((uint32_t)8U)       
+  ```
+
+- lwipopts.h配置LwIP的参数
+
+  ```C++
+  //内存堆 heap 大小，默认10K
+  #define MEM_SIZE (25*1024)
+  
+  /* memp 结构的 pbuf 数量如果应用从 ROM 或者静态存储区发送大量数据时这个值应该设置大一点，默认10 */
+  #define MEMP_NUM_PBUF 25
+  
+  /* 最多同时在 TCP 缓冲队列中的报文段数量，默认12 */
+  #define MEMP_NUM_TCP_SEG 150
+  
+  /* 内存池大小，默认16 */
+  #define PBUF_POOL_SIZE 65
+  
+  /* 最大 TCP 报文段， TCP_MSS = (MTU - IP 报头大小 - TCP 报头大小 */
+  #define TCP_MSS (1500 - 40)
+  
+  /* TCP 发送缓冲区大小（字节），默认：2*TCP_MSS */
+  #define TCP_SND_BUF (11*TCP_MSS)
+  
+  /* TCP 发送缓冲区队列的最大长度，默认：4* TCP_SND_BUF/TCP_MSS */
+  #define TCP_SND_QUEUELEN (8* TCP_SND_BUF/TCP_MSS)
+  
+  /* TCP 接收窗口大小，默认：4*TCP_MSS */
+  #define TCP_WND (11*TCP_MSS)
+  ```
+
+## 19、HTTP协议
+
+### 1）简介
+
+  - 基于TCP
+  - 简单
+  - 快捷
+  - 灵活
+  - 无连接
+  - 无状态
+    - 协议对于事务处理没有记忆能力
+    - Cookies是为了解决无状态所带来的问题
+
+### 2）URL
+
+```
+<scheme>://<user>:<password>@<host>:<port>/<path>;<params>?<query>#<frag>
+```
+
+- frag：客户端内部使用，不会传服务端
+
+### 3）HTTP服务器
+
+```C++
+#include "lwip/opt.h"
+#include "lwip/arch.h"
+#include "lwip/api.h"
+
+const static char http_html_hdr[] =
+    "HTTP/1.1 200 OK\r\nContent-type: text/html\r\n\r\n";
+
+const unsigned char Led1On_Data[] =
+    "<HTML> \
+<head><title>HTTP LED Control</title></head> \
+<center> \
+<p> \
+<font size=\"6\">LED<font style = \"color:red\">已打开！ </font> \
+<form method=post action=\"off\" name=\"ledform\"> \
+<input type=\"submit\" value=\"关闭\" style=\"width:80px;height:30px;\"></form> \
+</center> \
+</HTML> ";
+
+//当 LED 灭时，向浏览器返回如下 html 信息，显示结果如下图 15-7 所示
+const unsigned char Led1Off_Data[] =
+    "<HTML> \
+<head><title>HTTP LED Control</title></head> \
+<center> \
+<p> \
+<font size=\"6\">LED<font style = \"color:red\">已关闭！ </font> \
+<form method=post action=\"on\" name=\"ledform\"> \
+<input type=\"submit\" value=\"打开\" style=\"width:80px;height:30px;\"></form> \
+</center> \
+</HTML> ";
+
+static const char http_index_html[] =
+    "<html><head><title>Congrats!</title></head>\
+<body><h2 align=\"center\">Welcome to Fire lwIP HTTP Server!</h2>\
+<p align=\"center\">This is a small test page : http control led.</p>\
+<p align=\"center\"><a href=\"http://www.firebbs.cn/forum.php/\">\
+<font size=\"6\"> 野火电子论坛 </font> </a></p>\
+<a href=\"http://www.firebbs.cn/forum.php/\">\
+<img src=\"http://www.firebbs.cn/data/attachment/portal/201806/\
+05/163015rhz7mbgbt0zfujzh.jpg\"/></a>\
+</body></html>";
+
+static bool led_on = FALSE;
+
+/*发送网页数据*/
+void httpserver_send_html(struct netconn *conn, bool led_status)
+{
+    //发送数据头
+    netconn_write(conn, http_html_hdr,
+                  sizeof(http_html_hdr) - 1, NETCONN_NOCOPY);
+
+    /* 根据 LED 状态，发送不同的 LED 数据 */
+    if (led_status == TRUE)
+        netconn_write(conn, Led1On_Data,
+                      sizeof(Led1On_Data) - 1, NETCONN_NOCOPY);
+    else
+        netconn_write(conn, Led1Off_Data,
+                      sizeof(Led1Off_Data) - 1, NETCONN_NOCOPY);
+
+    netconn_write(conn, http_index_html,
+                  sizeof(http_index_html) - 1, NETCONN_NOCOPY);
+}
+
+static void httpserver_serve(struct netconn *conn)
+{
+    struct netbuf *inbuf;
+    char *buf;
+    u16_t buflen;
+    err_t err;
+
+    /* 等待客户端的命令数据 */
+    err = netconn_recv(conn, &inbuf);
+
+    if (err == ERR_OK)
+    {
+        netbuf_data(inbuf, (void **)&buf, &buflen);
+        /* “GET”命令 */
+        if (buflen >= 5 &&
+            buf[0] == 'G' &&
+            buf[1] == 'E' &&
+            buf[2] == 'T' &&
+            buf[3] == ' ' &&
+            buf[4] == '/')
+        {
+
+            /* 发送数据 */
+            httpserver_send_html(conn, led_on);
+        }
+        //“POST” 命令
+        else if (buflen >= 8 && buf[0] == 'P' && buf[1] == 'O' && buf[2] == 'S' && buf[3] == 'T')
+        {
+            if (buf[6] == 'o' && buf[7] == 'n')
+            {
+                //请求打开 LED
+                led_on = TRUE;
+                LED1_ON;
+            }
+            else if (buf[6] == 'o' && buf[7] == 'f' && buf[8] == 'f')
+            {
+                //请求关闭 LED
+                led_on = FALSE;
+                LED1_OFF;
+            }
+            //发送数据
+            httpserver_send_html(conn, led_on);
+        }
+
+        netbuf_delete(inbuf);
+    }
+    /* 关闭 */
+    netconn_close(conn);
+}
+
+/** The main function, never returns! */
+static void
+httpserver_thread(void *arg)
+{
+    struct netconn *conn, *newconn;
+    err_t err;
+    LWIP_UNUSED_ARG(arg);
+
+    /* 创建连接结构 */
+    conn = netconn_new(NETCONN_TCP);
+
+    led_on = TRUE;
+    LED1_ON;
+
+    /* 绑定 IP 地址与端口号*/
+    netconn_bind(conn, NULL, 80);
+
+    /* 监听 */
+    netconn_listen(conn);
+
+    do
+    {
+        err = netconn_accept(conn, &newconn);
+        if (err == ERR_OK)
+        {
+            httpserver_serve(newconn);
+            netconn_delete(newconn);
+        }
+    } while (err == ERR_OK);
+
+    netconn_close(conn);
+
+    netconn_delete(conn);
+}
+
+/** Initialize the HTTP server (start its thread) */
+void httpserver_init()
+{
+    sys_thread_new("http_server_netconn", httpserver_thread, NULL, 1024, 4);
+}
+```
+
+## 20、MQTT
+
+### 1）简介
+
+- 全称：消息队列遥测传输协议
+- 基于TCP
+- 提供一对多的消息发布
+- 降低程序的耦合性
+
+### 2）通信模型
+
+- 三种身份
+
+  - 发布者：客户端
+  - 订阅者：客户端
+  - 服务器（Broker）：服务器只是转发消息
+
+  ![image-20200318090638220](images\LwIP\MQTT通信模型.png)
+
+### 3）消息主题与服务质量
+
+- 多级别：每个级别用/分隔
+- utf8：主题名称编码一般采用utf8
+- 动态：绝大多数服务器支持动态发布/订阅主题，没有则创建
+- 会话：客户端和服务器建立连接后，就是一个会话
+- 服务质量：3个等级
+  - QoS0：有可能会丢
+    - 最多发送一次消息
+    - 接收不会发送回应
+    - 发送者不会重发消息
+  - QoS1：有可能收多次
+    - 最少发送一次消息
+    - 接受者需要应答，PUBACK
+    - 发送者会重发消息
+  - QoS2：不能丢，不能重复
+    - 一般用于支付
+    - 有额外开销
+
+### 4）控制报文
+
+- 固定头部
+
+  - 2字节
+  - 为必需
+
+  ![image-20200318091626946](images\LwIP\MQTT固定报头.png)
+
+  ![image-20200318091927761](images\LwIP\MQTT编码.png)
+
+- 可变报头
+
+  - 变长
+  - CONNECT、CONNACK、PINGREQ、PINGRESP、DISCONNECT不需要
+
+  ![image-20200318092328442](images\LwIP\MQTT可变报头.png)
+
+- 有效载荷
+
+  - 变长
+
+### 5）移植
+
+- paho.mqtt：https://github.com/eclipse/paho.mqtt.embedded-c
+  - alios也是用的这个，却标注自己的版权，脸皮有点厚
+  - 实现transport.c文件的接口
+
+```C++
+#include "transport.h"
+#include "lwip/opt.h"
+#include "lwip/arch.h"
+#include "lwip/api.h"
+#include "lwip/inet.h"
+#include "lwip/sockets.h"
+#include "string.h"
+
+static int mysock;
+
+/************************************************************************
+** 函数名称: transport_sendPacketBuffer
+** 函数功能: 以 TCP 方式发送数据
+** 入口参数: unsigned char* buf：数据缓冲区
+** int buflen：数据长度
+** 出口参数: <0 发送数据失败
+************************************************************************/
+int32_t transport_sendPacketBuffer(uint8_t *buf, int32_t buflen)
+{
+    int32_t rc;
+    rc = write(mysock, buf, buflen);
+    return rc;
+}
+
+/************************************************************************
+** 函数名称: transport_getdata
+** 函数功能: 接收 TCP 数据
+** 入口参数: unsigned char* buf：数据缓冲区
+** int count：数据长度
+** 出口参数: <=0 接收数据失败
+************************************************************************/
+int32_t transport_getdata(uint8_t *buf, int32_t count)
+{
+    int32_t rc;
+
+    rc = recv(mysock, buf, count, 0);
+    return rc;
+}
+
+/************************************************************************
+** 函数名称: transport_open
+** 函数功能: 打开一个接口，并且和服务器 建立连接
+** 入口参数: char* servip:服务器域名
+** int port:端口号
+** 出口参数: <0 打开连接失败
+************************************************************************/
+int32_t transport_open(int8_t *servip, int32_t port)
+{
+    int32_t *sock = &mysock;
+    int32_t ret;
+    // int32_t opt;
+    struct sockaddr_in addr;
+
+    //初始化服务器信息
+    memset(&addr, 0, sizeof(addr));
+    addr.sin_len = sizeof(addr);
+    addr.sin_family = AF_INET;
+    //填写服务器端口号
+    addr.sin_port = PP_HTONS(port);
+    //填写服务器 IP 地址
+    addr.sin_addr.s_addr = inet_addr((const char *)servip);
+
+    //创建 SOCK
+    *sock = socket(AF_INET, SOCK_STREAM, 0);
+    //连接服务器
+    ret = connect(*sock, (struct sockaddr *)&addr, sizeof(addr));
+    if (ret != 0)
+    {
+        //关闭链接
+        close(*sock);
+        //连接失败
+        return -1;
+    }
+    //连接成功,设置超时时间 1000ms
+    // opt = 1000;
+    // setsockopt(*sock,SOL_SOCKET,SO_RCVTIMEO,&opt,sizeof(int));
+
+    //返回套接字
+    return *sock;
+}
+
+/************************************************************************
+** 函数名称: transport_close
+** 函数功能: 关闭套接字
+** 入口参数: unsigned char* buf：数据缓冲区
+** int buflen：数据长度
+** 出口参数: <0 发送数据失败
+************************************************************************/
+int transport_close(void)
+{
+
+    int rc;
+    // rc = close(mysock);
+    rc = shutdown(mysock, SHUT_WR);
+    rc = recv(mysock, NULL, (size_t)0, 0);
+    rc = close(mysock);
+    return rc;
+}
+```
+
+### 6）使用
+
+```C++
+void mqtt_recv_thread(void *pvParameters)
+{
+    uint32_t curtick;
+    uint8_t no_mqtt_msg_exchange = 1;
+    uint8_t buf[MSG_MAX_LEN];
+    int32_t buflen = sizeof(buf);
+    int32_t type;
+    fd_set readfd;
+    struct timeval tv; //等待时间
+    tv.tv_sec = 0;
+    tv.tv_usec = 10;
+
+MQTT_START:
+    //开始连接
+    Client_Connect();
+    //获取当前滴答，作为心跳包起始时间
+    curtick = xTaskGetTickCount();
+    while (1)
+    {
+        //表明无数据交换
+        no_mqtt_msg_exchange = 1;
+
+        FD_ZERO(&readfd);
+        FD_SET(MQTT_Socket, &readfd);
+
+        //等待可读事件
+        select(MQTT_Socket + 1, &readfd, NULL, NULL, &tv);
+
+        //判断 MQTT 服务器是否有数据
+        if (FD_ISSET(MQTT_Socket, &readfd) != 0)
+        {
+            //读取数据包--注意这里参数为 0，不阻塞
+            type = ReadPacketTimeout(MQTT_Socket, buf, buflen, 0);
+            if (type != -1)
+            {
+                mqtt_pktype_ctl(type, buf, buflen);
+                //表明有数据交换
+                no_mqtt_msg_exchange = 0;
+                //获取当前滴答，作为心跳包起始时间
+                curtick = xTaskGetTickCount();
+            }
+        }
+
+        //这里主要目的是定时向服务器发送 PING 保活命令
+        if ((xTaskGetTickCount() - curtick) > (KEEPLIVE_TIME / 2 * 1000))
+        {
+            curtick = xTaskGetTickCount();
+            //判断是否有数据交换
+            if (no_mqtt_msg_exchange == 0)
+            {
+                //如果有数据交换，这次就不需要发送 PING 消息
+                continue;
+            }
+
+            if (MQTT_PingReq(MQTT_Socket) < 0)
+            {
+                //重连服务器
+                PRINT_DEBUG("发送保持活性 ping 失败....\n");
+                goto CLOSE;
+            }
+
+            //心跳成功
+            PRINT_DEBUG("发送保持活性 ping 作为心跳成功....\n");
+            //表明有数据交换
+            no_mqtt_msg_exchange = 0;
+        }
+    }
+
+CLOSE:
+    //关闭链接
+    transport_close();
+    //重新链接服务器
+    goto MQTT_START;
+}
+
+void mqtt_send_thread(void *pvParameters)
+{
+    int32_t ret;
+    uint8_t no_mqtt_msg_exchange = 1;
+    uint32_t curtick;
+    uint8_t res;
+    /* 定义一个创建信息返回值，默认为 pdTRUE */
+    BaseType_t xReturn = pdTRUE;
+    /* 定义一个接收消息的变量 */
+    // uint32_t* r_data;
+    DHT11_Data_TypeDef *recv_data;
+    //初始化 json 数据
+    cJSON *cJSON_Data = NULL;
+    cJSON_Data = cJSON_Data_Init();
+    double a, b;
+MQTT_SEND_START:
+
+    while (1)
+    {
+
+        xReturn = xQueueReceive(MQTT_Data_Queue, /* 消息队列的句柄 */
+                                &recv_data,      /* 发送的消息内容 */
+                                3000);           /* 等待时间 3000ms */
+        if (xReturn == pdTRUE)
+        {
+            a = recv_data->temperature;
+            b = recv_data->humidity;
+            printf("a = %f,b = %f\n", a, b);
+            //更新数据
+            res = cJSON_Update(cJSON_Data, TEMP_NUM, &a);
+            res = cJSON_Update(cJSON_Data, HUM_NUM, &b);
+
+            if (UPDATE_SUCCESS == res)
+            {
+                //更新数据成功，
+                char *p = cJSON_Print(cJSON_Data);
+                //发布消息
+                ret = MQTTMsgPublish(MQTT_Socket, (char *)TOPIC, QOS0, (uint8_t *)p);
+                if (ret >= 0)
+                {
+                    //表明有数据交换
+                    no_mqtt_msg_exchange = 0;
+                    //获取当前滴答，作为心跳包起始时间
+                    curtick = xTaskGetTickCount();
+                }
+                vPortFree(p);
+                p = NULL;
+            }
+            else
+                PRINT_DEBUG("update fail\n");
+        }
+        //这里主要目的是定时向服务器发送 PING 保活命令
+        if ((xTaskGetTickCount() - curtick) > (KEEPLIVE_TIME / 2 * 1000))
+        {
+            curtick = xTaskGetTickCount();
+            //判断是否有数据交换
+            if (no_mqtt_msg_exchange == 0)
+            {
+                //如果有数据交换，这次就不需要发送 PING 消息
+                continue;
+            }
+
+            if (MQTT_PingReq(MQTT_Socket) < 0)
+            {
+                //重连服务器
+                PRINT_DEBUG("发送保持活性 ping 失败....\n");
+                goto MQTT_SEND_CLOSE;
+            }
+
+            //心跳成功
+            PRINT_DEBUG("发送保持活性 ping 作为心跳成功....\n");
+            //表明有数据交换
+            no_mqtt_msg_exchange = 0;
+        }
+    }
+MQTT_SEND_CLOSE:
+    //关闭链接
+    transport_close();
+    //开始连接
+    Client_Connect();
+    goto MQTT_SEND_START;
+}
+
+void mqtt_thread_init(void)
+{
+    sys_thread_new("mqtt_recv_thread", mqtt_recv_thread, NULL, 2048, 6);
+    sys_thread_new("mqtt_send_thread", mqtt_send_thread, NULL, 2048, 7);
+}
+```
+
+
+
+```C++
+void Client_Connect(void)
+{
+    char *host_ip;
+
+#ifdef LWIP_DNS
+    ip4_addr_t dns_ip;
+    netconn_gethostbyname(HOST_NAME, &dns_ip);
+    host_ip = ip_ntoa(&dns_ip);
+    PRINT_DEBUG("host name : %s , host_ip : %s\n", HOST_NAME, host_ip);
+#else
+    host_ip = HOST_NAME;
+#endif
+MQTT_START:
+
+    //创建网络连接
+    PRINT_DEBUG("1.开始连接对应云平台的服务器...\n");
+    PRINT_DEBUG("服务器 IP 地址： %s，端口号： %0d！ \n", host_ip, HOST_PORT);
+    while (1)
+    {
+        //连接服务器
+        MQTT_Socket = transport_open((int8_t *)host_ip, HOST_PORT);
+        //如果连接服务器成功
+        if (MQTT_Socket >= 0)
+        {
+            PRINT_DEBUG("连接云平台服务器成功！ \n");
+            break;
+        }
+        PRINT_DEBUG("连接云平台服务器失败，等待 3 秒再尝试重新连接！ \n");
+        //等待 3 秒
+        vTaskDelay(3000);
+    }
+
+    PRINT_DEBUG("2.MQTT 用户名与秘钥验证登陆...\n");
+    //MQTT 用户名与秘钥验证登陆
+    if (MQTT_Connect() != Connect_OK)
+    {
+        //重连服务器
+        PRINT_DEBUG("MQTT 用户名与秘钥验证登陆失败...\n");
+        //关闭链接
+        transport_close();
+        goto MQTT_START;
+    }
+
+    //订阅消息
+    PRINT_DEBUG("3.开始订阅消息...\n");
+    //订阅消息
+    if (MQTTSubscribe(MQTT_Socket, (char *)TOPIC, QOS1) < 0)
+    {
+        //重连服务器
+        PRINT_DEBUG("客户端订阅消息失败...\n");
+        //关闭链接
+        transport_close();
+        goto MQTT_START;
+    }
+
+    //无限循环
+    PRINT_DEBUG("4.开始循环接收订阅的消息...\n");
+}
+
+uint8_t MQTT_Connect(void)
+{
+    MQTTPacket_connectData data = MQTTPacket_connectData_initializer;
+    uint8_t buf[200];
+    int buflen = sizeof(buf);
+    int len = 0;
+    data.clientID.cstring = CLIENT_ID;      //可以是随机的
+    data.keepAliveInterval = KEEPLIVE_TIME; //保持活跃
+    data.username.cstring = USER_NAME;      //用户名
+    data.password.cstring = PASSWORD;       //秘钥
+    data.MQTTVersion = MQTT_VERSION;        //3 表示 3.1 版本， 4 表示 3.11 版本
+    data.cleansession = 1;
+    //组装消息
+    len = MQTTSerialize_connect((unsigned char *)buf, buflen, &data);
+    //发送消息
+    transport_sendPacketBuffer(buf, len);
+
+    /* 等待连接响应 */
+    if (MQTTPacket_read(buf, buflen, transport_getdata) == CONNACK)
+    {
+        unsigned char sessionPresent, connack_rc;
+        if (MQTTDeserialize_connack(&sessionPresent, &connack_rc,
+                                    buf, buflen) != 1 ||
+            connack_rc != 0)
+        {
+            PRINT_DEBUG("无法连接，错误代码是: %d！ \n", connack_rc);
+            return Connect_NOK;
+        }
+        else
+        {
+            PRINT_DEBUG("用户名与秘钥验证成功， MQTT 连接成功！ \n");
+            return Connect_OK;
+        }
+    }
+    else
+        PRINT_DEBUG("MQTT 连接无响应！ \n");
+    return Connect_NOTACK;
+}
+
+/************************************************************************
+** 函数名称: MQTTSubscribe
+** 函数功能: 订阅消息
+** 入口参数: int32_t sock：套接字
+** int8_t *topic：主题
+** enum QoS pos：消息质量
+** 出口参数: >=0:发送成功 <0:发送失败
+** 备 注:
+************************************************************************/
+int32_t MQTTSubscribe(int32_t sock, char *topic, enum QoS pos)
+{
+    static uint32_t PacketID = 0;
+    uint16_t packetidbk = 0;
+    int32_t conutbk = 0;
+    uint8_t buf[100];
+    int32_t buflen = sizeof(buf);
+    MQTTString topicString = MQTTString_initializer;
+    int32_t len;
+    int32_t req_qos, qosbk;
+
+    fd_set readfd;
+    struct timeval tv;
+    tv.tv_sec = 2;
+    tv.tv_usec = 0;
+
+    FD_ZERO(&readfd);
+    FD_SET(sock, &readfd);
+
+    //复制主题
+    topicString.cstring = (char *)topic;
+    //订阅质量
+    req_qos = pos;
+
+    //串行化订阅消息
+    len = MQTTSerialize_subscribe(buf, buflen, 0,
+                                  PacketID++, 1, &topicString, &req_qos);
+    //发送 TCP 数据
+    if (transport_sendPacketBuffer(buf, len) < 0)
+        return -1;
+
+    //等待可读事件--等待超时
+    if (select(sock + 1, &readfd, NULL, NULL, &tv) == 0)
+        return -2;
+    //有可读事件--没有可读事件
+    if (FD_ISSET(sock, &readfd) == 0)
+        return -3;
+
+    //等待订阅返回--未收到订阅返回
+    if (MQTTPacket_read(buf, buflen, transport_getdata) != SUBACK)
+        return -4;
+
+    //拆订阅回应报文
+    if (MQTTDeserialize_suback(&packetidbk, 1,
+                               &conutbk, &qosbk, buf, buflen) != 1)
+        return -5;
+
+    //检测返回数据的正确性
+    if ((qosbk == 0x80) || (packetidbk != (PacketID - 1)))
+        return -6;
+
+    //订阅成功
+    return 0;
+}
+```
 
